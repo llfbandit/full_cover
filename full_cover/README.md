@@ -4,7 +4,7 @@ Multi-package test coverage for Dart and Flutter projects.
 
 Runs tests across all packages, merges coverage data, and generates an HTML report with line, branch, and function coverage.
 
-![Coverage report screenshot](doc/img/screen.png)
+![Coverage report screenshot](https://github.com/llfbandit/full_cover/blob/main/full_cover/doc/img/screen.png)
 
 ---
 
@@ -43,7 +43,7 @@ full_cover --clean
 
 ## Configuration
 
-Create `full_cover.yaml` alongside your root `pubspec.yaml` ([Template](doc/full_cover.yaml)):
+Create `full_cover.yaml` alongside your root `pubspec.yaml` ([Template](https://github.com/llfbandit/full_cover/blob/main/full_cover/doc/full_cover.yaml)):
 
 | Key                           | Default    | Description                                                         |
 |-------------------------------|------------|---------------------------------------------------------------------|
