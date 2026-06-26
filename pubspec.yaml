@@ -1,0 +1,40 @@
+name: full_cover_workspace
+
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dev_dependencies:
+  melos: ^8.0.0
+
+workspace:
+  - full_cover
+
+#### MELOS section ####
+
+melos:
+  # Don't generate intellij files
+  ide:
+    intellij: false
+
+  command:
+    bootstrap:
+      environment:
+        sdk: ^3.8.0
+      dependencies:
+        # Linter rules (https://pub.dev/packages/lints)
+        lints: ^6.0.0
+
+      runPubGetInParallel: true
+
+    version:
+      # Only allow versioning to happen on main branch.
+      branch: main
+      # Additionally build a changelog at the root of the workspace.
+      workspaceChangelog: false
+
+  scripts:
+    format:
+      description: Format Dart code.
+      run: dart format .

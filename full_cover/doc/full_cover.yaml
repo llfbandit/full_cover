@@ -1,0 +1,29 @@
+global_excludes:
+  files:
+    - "**/*.g.dart"               # exclude all generated files across all packages
+    - "**/*.freezed.dart"
+
+# package_excludes:
+#   - package: "packages/greeter"   # glob pattern matching the package path
+#     excludes:
+#       - "lib/src/un*.dart"        # file/folder glob patterns within that package
+
+output:
+  global: true                    # write merged lcov.info at output.directory/lcov.info
+  directory: coverage             # base folder for coverage outputs
+
+  html:
+    global: true                  # generate a merged HTML report at output.directory/html.directory
+    package: false                # also generate an HTML report inside each package's coverage/html
+    directory: html               # HTML subfolder relative to output.directory
+
+limits:
+  line:
+    minimum: 60                   # below this => red
+    average: 80                   # below this => yellow, above => green
+  branch:
+    minimum: 60
+    average: 80
+  function:
+    minimum: 60
+    average: 80

@@ -1,0 +1,16 @@
+name: ui_widgets
+description: Example Flutter package for full_cover demonstration.
+publish_to: none
+
+resolution: workspace
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

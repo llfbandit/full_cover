@@ -1,0 +1,15 @@
+name: full_cover_example
+description: Example workspace illustrating the full_cover tool.
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+workspace:
+  - packages/greeter
+  - packages/ui_widgets
+
+dev_dependencies:
+  test: ^1.0.0
+  full_cover:
+    path: ../
