@@ -4,7 +4,7 @@ Multi-package test coverage for Dart and Flutter projects.
 
 Runs tests across all packages, merges coverage data, and generates an HTML report with line, branch, and function coverage.
 
-![Coverage report screenshot](https://github.com/llfbandit/full_cover/blob/main/full_cover/doc/img/screen.png)
+![Coverage report screenshot](https://raw.githubusercontent.com/llfbandit/full_cover/refs/heads/main/full_cover/doc/img/screen.png)
 
 ---
 
