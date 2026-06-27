@@ -70,3 +70,11 @@ The root package is always included. Sub-packages are resolved from the root `pu
 
 1. `workspace:` list (Dart workspace resolution)
 2. `path:` entries in `dependencies`, `dev_dependencies`, and `dependency_overrides`
+
+---
+
+## Motivation
+
+I started this project a while back for personal needs. It was also a way to learn more about the internals of the Dart VM.
+
+Hope you'll like it!

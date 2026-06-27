@@ -4,6 +4,7 @@ import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+import 'ansi.dart';
 import 'config/config.dart';
 import 'config/package_config.dart';
 import 'coverage/branch_analyzer.dart';
@@ -12,100 +13,45 @@ import 'coverage/lcov_injector.dart';
 import 'coverage/lcov_merger.dart';
 import 'coverage/lcov_parser.dart';
 import 'coverage/lcov_record.dart';
+import 'logger.dart';
 import 'reporter/html_reporter.dart';
 import 'runner/test_runner.dart';
 
 class FullCoverRunner {
-  final bool verbose;
+  final LogLevel level;
   final bool skipTests;
   final String? concurrency;
+  final Logger logger;
 
-  const FullCoverRunner({
-    this.verbose = false,
+  FullCoverRunner({
+    this.level = LogLevel.normal,
     this.skipTests = false,
     this.concurrency,
-  });
+    Logger? logger,
+  }) : logger = logger ?? Logger(level: level);
 
   Future<void> run(FullCoverConfig config) async {
-    final runner = TestRunner(verbose: verbose, concurrency: concurrency);
-    final parser = LcovParser();
-    final branchAnalyzer = BranchAnalyzer();
-    final filter = LcovFilter();
-    final injector = LcovInjector();
-    final merger = LcovMerger();
-    final reporter = HtmlReporter();
-
     final packages = _discoverPackages(
       config.workspaceRoot,
       config.packageExcludes,
     );
-    _log('Discovered ${packages.length} package(s).');
+    logger.info(ansi.bold('Discovered ${packages.length} package(s).'));
 
-    final allPackageRecords = <List<LcovRecord>>[];
-
-    for (final pkg in packages) {
-      final pkgPath = p.normalize(p.absolute(pkg.path));
-      _log('Processing package: $pkgPath');
-
-      List<LcovRecord> records;
-
-      if (skipTests) {
-        final lcovFile = File(p.join(pkgPath, 'coverage', 'lcov.info'));
-        if (!lcovFile.existsSync()) {
-          _log('  No coverage data at ${lcovFile.path}, skipping.');
-          continue;
-        }
-        records = parser.parse(lcovFile.readAsStringSync());
-      } else {
-        final lcovPath = await runner.run(pkg);
-        records = parser.parse(File(lcovPath).readAsStringSync());
-      }
-
-      // Flutter's lcov.info uses relative SF: paths (e.g. lib/src/foo.dart).
-      // Resolve them to absolute paths so all downstream code works uniformly.
-      records = records.map((r) {
-        if (p.isAbsolute(r.sourceFile)) return r;
-        return r.copyWith(
-          sourceFile: p.normalize(p.join(pkgPath, r.sourceFile)),
-        );
-      }).toList();
-
-      _log('  Parsed ${records.length} source records.');
-
-      // Inject zero-coverage files before filtering so excludes also apply to them
-      records = await injector.inject(records, pkgPath);
-      _log('  After injection: ${records.length} records.');
-
-      // Replace VM line-level branch data with condition-level branch data
-      records = records.map(branchAnalyzer.analyze).toList();
-
-      records = filter.apply(
-        records: records,
-        filePatterns: [...config.globalFileExcludes, ...pkg.excludes],
-        packagePath: pkgPath,
-      );
-      _log('  After filtering: ${records.length} records.');
-
-      if (config.htmlPackage && records.isNotEmpty) {
-        final pkgOutDir = p.join(pkgPath, 'coverage', 'html');
-        _log('  Generating per-package HTML → $pkgOutDir');
-        await reporter.generate(
-          records: records,
-          outputDir: pkgOutDir,
-          title: p.basename(pkgPath),
-          rootPath: pkgPath,
-          limits: config.limits,
-        );
-      }
-
-      allPackageRecords.add(records);
-    }
+    // Packages are independent, so process them concurrently. The bound keeps
+    // us from spawning more test processes than the machine can usefully run
+    // (each package's `dart test` already honours its own --concurrency).
+    final results = await _mapBounded(
+      packages,
+      Platform.numberOfProcessors,
+      (pkg) => _processPackage(pkg, config),
+    );
+    final allPackageRecords = [for (final records in results) ?records];
 
     if (allPackageRecords.isEmpty) return;
 
     if (config.globalLcov || config.htmlGlobal) {
-      _log('Merging all packages...');
-      final merged = merger.merge(allPackageRecords);
+      logger.info('\n${ansi.header('Merging all packages')}');
+      final merged = LcovMerger().merge(allPackageRecords);
 
       final absOutputDir = p.normalize(
         p.join(config.workspaceRoot, config.outputDirectory),
@@ -113,7 +59,7 @@ class FullCoverRunner {
 
       if (config.globalLcov) {
         final lcovOut = p.join(absOutputDir, 'lcov.info');
-        _log('Writing merged lcov → $lcovOut');
+        logger.info(ansi.dim('  Writing merged lcov → $lcovOut'));
         await Directory(absOutputDir).create(recursive: true);
         final lcovContent = merged.map((r) => r.toInfoString()).join('\n');
         await File(lcovOut).writeAsString(lcovContent);
@@ -121,8 +67,8 @@ class FullCoverRunner {
 
       if (config.htmlGlobal) {
         final htmlOut = p.join(absOutputDir, config.htmlDirectory);
-        _log('Generating global HTML → $htmlOut');
-        await reporter.generate(
+        logger.info(ansi.dim('  Generating global HTML → $htmlOut'));
+        await HtmlReporter().generate(
           records: merged,
           outputDir: htmlOut,
           title: 'Global Coverage',
@@ -131,7 +77,151 @@ class FullCoverRunner {
       }
     }
 
-    _log('Done.');
+    logger.info('\n${ansi.green(ansi.bold('✓ Done.'))}');
+  }
+
+  /// Runs the full pipeline for [pkg], returning its filtered records or null
+  /// when there was nothing to process.
+  ///
+  /// Verbose detail is captured into a per-package buffer so concurrent packages
+  /// don't interleave. When verbose, that buffer is flushed as a single labeled
+  /// block; otherwise a one-line summary is emitted as the package finishes.
+  Future<List<LcovRecord>?> _processPackage(
+    PackageConfig pkg,
+    FullCoverConfig config,
+  ) async {
+    final buffer = StringBuffer();
+    final pkgLogger = Logger(level: level, sink: buffer.writeln);
+    final pkgPath = p.normalize(p.absolute(pkg.path));
+    final name = p.basename(pkgPath);
+    try {
+      final records = await _runPipeline(pkg, pkgPath, config, pkgLogger);
+      if (logger.isVerbose) {
+        _flushBlock(name, buffer);
+      } else {
+        _logSummary(name, records);
+      }
+      return records;
+    } catch (_) {
+      // Surface whatever detail was captured before letting the error propagate
+      // (the test output itself rides along on the thrown StateError).
+      _flushBlock(name, buffer);
+      rethrow;
+    }
+  }
+
+  /// Flushes a package's captured verbose output as one labeled block.
+  void _flushBlock(String name, StringBuffer buffer) {
+    if (buffer.isEmpty) return;
+    logger.info('\n${ansi.header('━━━━━ $name ━━━━━')}');
+    logger.info(buffer.toString().trimRight());
+  }
+
+  /// Emits a one-line normal-mode summary for a finished package.
+  void _logSummary(String name, List<LcovRecord>? records) {
+    if (records == null) {
+      logger.warn('  ${ansi.yellow('⚠')} $name — no coverage data, skipping');
+      return;
+    }
+    var found = 0;
+    var hit = 0;
+    for (final r in records) {
+      found += r.linesFound;
+      hit += r.linesHit;
+    }
+    final pct = found == 0 ? '—' : '${(100 * hit / found).toStringAsFixed(1)}%';
+    logger.info('  ${ansi.green('✓')} ${name.padRight(24)} $pct');
+  }
+
+  Future<List<LcovRecord>?> _runPipeline(
+    PackageConfig pkg,
+    String pkgPath,
+    FullCoverConfig config,
+    Logger log,
+  ) async {
+    log.detail(ansi.dim('Processing $pkgPath'));
+
+    final parser = LcovParser();
+    List<LcovRecord> records;
+
+    if (skipTests) {
+      final lcovFile = File(p.join(pkgPath, 'coverage', 'lcov.info'));
+      if (!lcovFile.existsSync()) {
+        log.detail(
+          ansi.yellow('  No coverage data at ${lcovFile.path}, skipping.'),
+        );
+        return null;
+      }
+      records = parser.parse(lcovFile.readAsStringSync());
+    } else {
+      final lcovPath = await TestRunner(
+        logger: log,
+        concurrency: concurrency,
+      ).run(pkg);
+      records = parser.parse(File(lcovPath).readAsStringSync());
+    }
+
+    // Flutter's lcov.info uses relative SF: paths (e.g. lib/src/foo.dart).
+    // Resolve them to absolute paths so all downstream code works uniformly.
+    records = records.map((r) {
+      if (p.isAbsolute(r.sourceFile)) return r;
+      return r.copyWith(sourceFile: p.normalize(p.join(pkgPath, r.sourceFile)));
+    }).toList();
+
+    log.detail(ansi.dim('  Parsed ${records.length} source records.'));
+
+    // Inject zero-coverage files before filtering so excludes also apply to them
+    records = await LcovInjector().inject(records, pkgPath);
+    log.detail(ansi.dim('  After injection: ${records.length} records.'));
+
+    // Replace VM line-level branch data with condition-level branch data
+    final branchAnalyzer = BranchAnalyzer();
+    records = records.map(branchAnalyzer.analyze).toList();
+
+    records = LcovFilter().apply(
+      records: records,
+      filePatterns: [...config.globalFileExcludes, ...pkg.excludes],
+      packagePath: pkgPath,
+    );
+    log.detail(ansi.dim('  After filtering: ${records.length} records.'));
+
+    if (config.htmlPackage && records.isNotEmpty) {
+      final pkgOutDir = p.join(pkgPath, 'coverage', 'html');
+      log.detail(ansi.dim('  Generating per-package HTML → $pkgOutDir'));
+      await HtmlReporter().generate(
+        records: records,
+        outputDir: pkgOutDir,
+        title: p.basename(pkgPath),
+        rootPath: pkgPath,
+        limits: config.limits,
+      );
+    }
+
+    return records;
+  }
+
+  /// Applies [task] to each of [items] with at most [maxConcurrent] running at
+  /// once, preserving input order in the returned results.
+  Future<List<T>> _mapBounded<S, T>(
+    List<S> items,
+    int maxConcurrent,
+    Future<T> Function(S item) task,
+  ) async {
+    final results = List<T?>.filled(items.length, null);
+    var next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final index = next++; // single-threaded event loop: no race here
+        if (index >= items.length) return;
+        results[index] = await task(items[index]);
+      }
+    }
+
+    final workerCount = maxConcurrent < items.length
+        ? maxConcurrent
+        : items.length;
+    await Future.wait([for (var i = 0; i < workerCount; i++) worker()]);
+    return results.cast<T>();
   }
 
   Future<void> clean(FullCoverConfig config) async {
@@ -156,7 +246,7 @@ class FullCoverRunner {
   Future<void> _deleteIfExists(String path) async {
     final dir = Directory(path);
     if (dir.existsSync()) {
-      _log('Removing $path');
+      logger.info(ansi.dim('Removing $path'));
       await dir.delete(recursive: true);
     }
   }
@@ -183,7 +273,11 @@ class FullCoverRunner {
             paths.add(p.normalize(p.join(workspaceRoot, entry as String)));
           }
         } else {
-          for (final section in ['dependencies', 'dev_dependencies', 'dependency_overrides']) {
+          for (final section in [
+            'dependencies',
+            'dev_dependencies',
+            'dependency_overrides',
+          ]) {
             final deps = yaml[section] as YamlMap?;
             if (deps == null) continue;
             for (final value in deps.values) {
@@ -213,9 +307,5 @@ class FullCoverRunner {
       }
       return PackageConfig(path: pkgPath, excludes: excludes);
     }).toList();
-  }
-
-  void _log(String message) {
-    if (verbose) print(message);
   }
 }

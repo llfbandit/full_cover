@@ -31,36 +31,118 @@ class BranchAnalyzer {
 
     final lineHits = <int, int>{for (final l in record.lines) l.line: l.hits};
 
-    // Parsing succeeded — the AST is the source of truth from here.
-    // An empty visitor.branches means the file has no decision points, which
-    // is correct (branchesFound = 0). We do NOT fall back to VM data because
-    // the VM emits spurious BRDA entries for function entry points that are
-    // not condition-level branches.
+    // The VM's own branch data (BRDA, from `--branch-coverage`) keyed by the
+    // source line of each branch's entry token. The AST decides *which* branches
+    // exist; this tells us whether each arm was taken — accurately even when the
+    // arm body is a `return <literal>;` the VM omits from line data. We key by
+    // line and keep the max so any covered path wins.
+    final vmBranchHits = <int, int>{};
+    for (final b in record.branches) {
+      final hits = b.hits ?? 0;
+      vmBranchHits.update(
+        b.line,
+        (v) => hits > v ? hits : v,
+        ifAbsent: () => hits,
+      );
+    }
+    final hasVmBranches = record.branches.isNotEmpty;
+
+    // The AST is the structural source of truth. We do not adopt the VM's
+    // branch *list* directly (it includes spurious function-entry entries), but
+    // we do consult its hit counts per arm via [vmBranchHits].
     final parseResult = parseString(content: source, throwIfDiagnostics: false);
-    final visitor = _BranchVisitor(lineHits, parseResult.lineInfo);
+    final visitor = _BranchVisitor(
+      lineHits,
+      vmBranchHits,
+      hasVmBranches,
+      parseResult.lineInfo,
+    );
     parseResult.unit.accept(visitor);
+
+    // Backfill statement lines the VM omitted from its line data. The VM does
+    // not emit a coverable position for some fall-through statements (e.g. a
+    // bare `return <literal>;` reached only when the `if` above it is false),
+    // which makes those lines silently absent rather than flagged. The branch
+    // pass already derives how often control reached each such line, so we add
+    // a DA entry for any inferred line the VM didn't report. We never override
+    // real VM hits — only fill genuine gaps.
+    final lines = _withBackfilledLines(record.lines, visitor.inferredLines);
+
     return record.copyWith(
+      lines: lines,
       branches: visitor.branches,
       functions: visitor.functions,
     );
+  }
+
+  List<LineData> _withBackfilledLines(
+    List<LineData> vmLines,
+    Map<int, int> inferred,
+  ) {
+    final existing = {for (final l in vmLines) l.line};
+    final backfill = [
+      for (final entry in inferred.entries)
+        if (!existing.contains(entry.key)) LineData(entry.key, entry.value),
+    ];
+    if (backfill.isEmpty) return vmLines;
+    return [...vmLines, ...backfill]..sort((a, b) => a.line.compareTo(b.line));
   }
 }
 
 class _BranchVisitor extends RecursiveAstVisitor<void> {
   final Map<int, int> lineHits;
+  final Map<int, int> vmBranchHits;
+  final bool hasVmBranches;
   final LineInfo lineInfo;
   final List<BranchData> branches = [];
   final List<FunctionData> functions = [];
 
+  /// Lines the branch pass reached, mapped to their inferred hit count. Used to
+  /// backfill statement lines the VM omitted from its line data.
+  final Map<int, int> inferredLines = {};
+
   int _blockId = 0;
 
-  _BranchVisitor(this.lineHits, this.lineInfo);
+  _BranchVisitor(
+    this.lineHits,
+    this.vmBranchHits,
+    this.hasVmBranches,
+    this.lineInfo,
+  );
+
+  /// Records [hits] for [line], keeping the highest count if it's seen more
+  /// than once (any path that executed it wins over one that didn't).
+  void _inferLine(int line, int hits) {
+    final existing = inferredLines[line];
+    if (existing == null || hits > existing) inferredLines[line] = hits;
+  }
 
   // ------------------------------------------------------------------ helpers
 
   int _lineOf(int offset) => lineInfo.getLocation(offset).lineNumber;
 
   int _hitsAt(int line) => lineHits[line] ?? 0;
+
+  /// The source line of an arm's entry token — a block's `{`, or the bare
+  /// statement/expression itself. This is where the VM keys the arm's branch.
+  int _entryLine(AstNode node) {
+    if (node is Block) return _lineOf(node.leftBracket.offset);
+    return _lineOf(node.beginToken.offset);
+  }
+
+  /// Hit count for a branch arm whose entry token is on [entryLine] and whose
+  /// first executable line is [bodyLine].
+  ///
+  /// Prefers the VM's branch data (accurate even when [bodyLine] is a constant
+  /// `return` the VM drops from line data); falls back to line hits when the VM
+  /// has no branch entry for this arm (e.g. unit tests, or an implicit else).
+  int _armHits(int entryLine, int bodyLine) {
+    if (hasVmBranches) {
+      final vm = vmBranchHits[entryLine] ?? vmBranchHits[bodyLine];
+      if (vm != null) return vm;
+    }
+    return _hitsAt(bodyLine);
+  }
 
   /// Returns the first executable line inside [node], or null for an empty block.
   int? _firstLineOf(AstNode node) {
@@ -107,37 +189,38 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     final thenLine = _firstLineOf(thenNode);
 
     if (thenLine == null || thenLine == decisionLine) {
-      // Single-line if: `if (cond) statement;`
-      // We can't read the true-branch hit directly, but we can infer it from
-      // how many times execution fell through to the next sibling statement.
-      //   false_hits = hits on next statement (condition evaluated to false)
-      //   true_hits  = condition_hits - false_hits
+      // Single-line if: `if (cond) statement;` (then sits on the decision line).
       if (elseNode != null) return; // can't infer for single-line if-else
-      final nextLine = _nextSiblingLine(ifNode);
-      if (nextLine == null) {
-        return; // last statement in block, no reference point
-      }
-      final condHits = _hitsAt(decisionLine);
-      final falseHits = _hitsAt(nextLine);
-      final trueHits = (condHits - falseHits).clamp(0, condHits);
       final block = _blockId++;
+      final trueHits = _armHits(decisionLine, decisionLine);
       branches.add(BranchData(decisionLine, block, 0, trueHits));
+
+      // The false arm is the fall-through to the next sibling statement. The VM
+      // has no branch entry for an implicit else, so this relies on line hits —
+      // and stays 0 when that sibling is itself a VM-omitted constant return.
+      final nextLine = _nextSiblingLine(ifNode);
+      if (nextLine == null) return; // last statement in block, no reference
+      final falseHits = _armHits(nextLine, nextLine);
       branches.add(BranchData(decisionLine, block, 1, falseHits));
+      _inferLine(nextLine, falseHits);
       return;
     }
 
     // Multi-line if: then-body starts on a different line.
     final block = _blockId++;
-    final trueHits = _hitsAt(thenLine);
+    final trueHits = _armHits(_entryLine(thenNode), thenLine);
     branches.add(BranchData(decisionLine, block, 0, trueHits));
+    _inferLine(thenLine, trueHits);
 
-    if (elseNode != null) {
-      final elseLine = _firstLineOf(elseNode);
-      final falseHits = (elseLine != null && elseLine != decisionLine)
-          ? _hitsAt(elseLine)
-          : (_hitsAt(decisionLine) - trueHits).clamp(0, _hitsAt(decisionLine));
+    final elseLine = elseNode == null ? null : _firstLineOf(elseNode);
+    if (elseNode != null && elseLine != null && elseLine != decisionLine) {
+      // Else with a body on its own line: read its hits directly.
+      final falseHits = _armHits(_entryLine(elseNode), elseLine);
       branches.add(BranchData(decisionLine, block, 1, falseHits));
+      _inferLine(elseLine, falseHits);
     } else {
+      // No else, or an else with no distinct body line (empty/same-line):
+      // infer the false arm from how often the condition didn't take the then.
       final condHits = _hitsAt(decisionLine);
       branches.add(
         BranchData(
@@ -183,8 +266,12 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     // Only emit branches when sub-expressions are on distinct lines from the `?`.
     if (thenLine != condLine || elseLine != condLine) {
       final block = _blockId++;
-      branches.add(BranchData(condLine, block, 0, _hitsAt(thenLine)));
-      branches.add(BranchData(condLine, block, 1, _hitsAt(elseLine)));
+      final thenHits = _armHits(thenLine, thenLine);
+      final elseHits = _armHits(elseLine, elseLine);
+      branches.add(BranchData(condLine, block, 0, thenHits));
+      branches.add(BranchData(condLine, block, 1, elseHits));
+      if (thenLine != condLine) _inferLine(thenLine, thenHits);
+      if (elseLine != condLine) _inferLine(elseLine, elseHits);
     }
 
     super.visitConditionalExpression(node);
@@ -204,6 +291,18 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     return '';
   }
 
+  /// Hit count for a function declared on [declLine] with [body].
+  ///
+  /// Uses the max of the declaration line and the first body line. The first
+  /// body line alone is unreliable: the VM omits some statement positions (e.g.
+  /// a bare `switch` keyword) so a clearly-executed function can read 0 there,
+  /// while the function-entry position on the declaration line is recorded.
+  int _functionHits(int declLine, FunctionBody body) {
+    final declHits = _hitsAt(declLine);
+    final bodyHits = _firstBodyHits(body);
+    return declHits > bodyHits ? declHits : bodyHits;
+  }
+
   int _firstBodyHits(FunctionBody body) {
     if (body is BlockFunctionBody) {
       if (body.block.statements.isNotEmpty) {
@@ -221,12 +320,14 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   void visitFunctionDeclaration(FunctionDeclaration node) {
     final body = node.functionExpression.body;
     if (body is! EmptyFunctionBody) {
-      final fn = FunctionData(
-        node.name.lexeme,
-        _lineOf(node.beginToken.offset),
-        hits: _firstBodyHits(body),
+      final declLine = _lineOf(node.beginToken.offset);
+      functions.add(
+        FunctionData(
+          node.name.lexeme,
+          declLine,
+          hits: _functionHits(declLine, body),
+        ),
       );
-      functions.add(fn);
     }
     super.visitFunctionDeclaration(node);
   }
@@ -239,12 +340,10 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       final name = typeName.isNotEmpty
           ? '$typeName.${node.name.lexeme}'
           : node.name.lexeme;
-      final fn = FunctionData(
-        name,
-        _lineOf(node.beginToken.offset),
-        hits: _firstBodyHits(body),
+      final declLine = _lineOf(node.beginToken.offset);
+      functions.add(
+        FunctionData(name, declLine, hits: _functionHits(declLine, body)),
       );
-      functions.add(fn);
     }
     super.visitMethodDeclaration(node);
   }
@@ -256,12 +355,10 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       final typeName = _enclosingTypeName(node);
       final ctorSuffix = node.name?.lexeme;
       final name = ctorSuffix != null ? '$typeName.$ctorSuffix' : typeName;
-      final fn = FunctionData(
-        name,
-        _lineOf(node.beginToken.offset),
-        hits: _firstBodyHits(body),
+      final declLine = _lineOf(node.beginToken.offset);
+      functions.add(
+        FunctionData(name, declLine, hits: _functionHits(declLine, body)),
       );
-      functions.add(fn);
     }
     super.visitConstructorDeclaration(node);
   }
@@ -279,9 +376,10 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
           ? _lineOf(member.statements.first.beginToken.offset)
           : null;
       if (firstLine != null) {
-        branches.add(
-          BranchData(switchLine, block, branchIdx, _hitsAt(firstLine)),
-        );
+        // The VM keys a switch arm at its `case`/`default` keyword.
+        final hits = _armHits(_lineOf(member.beginToken.offset), firstLine);
+        branches.add(BranchData(switchLine, block, branchIdx, hits));
+        _inferLine(firstLine, hits);
       }
       branchIdx++;
     }

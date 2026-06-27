@@ -1,5 +1,5 @@
 name: full_cover
-description: Multi-package test coverage for Dart and Flutter workspaces. Merges LCOV data and generates HTML reports.
+description: Multi-package test coverage. Enhances and merges LCOV data, generates HTML reports and more.
 version: 1.0.0
 homepage: https://github.com/llfbandit/full_cover/tree/main/full_cover
 

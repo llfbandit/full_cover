@@ -1,16 +1,21 @@
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:coverage/coverage.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+import '../ansi.dart';
 import '../config/package_config.dart';
+import '../coverage/lcov_converter.dart';
+import '../logger.dart';
 
 class TestRunner {
-  final bool verbose;
+  final Logger logger;
   final String? concurrency;
+  final LcovConverter _converter;
 
-  const TestRunner({this.verbose = false, this.concurrency});
+  const TestRunner({this.logger = const Logger(), this.concurrency})
+    : _converter = const LcovConverter();
 
   /// Runs tests for [pkg] and returns the path to the generated lcov.info.
   Future<String> run(PackageConfig pkg) async {
@@ -42,120 +47,88 @@ class TestRunner {
   }
 
   Future<void> _runFlutter(String pkgPath) async {
-    _log('Running flutter test in $pkgPath...');
-    final result = await Process.run(
-      'flutter',
-      [
-        'test',
-        '--coverage',
-        '--branch-coverage',
-        if (concurrency != null) '--concurrency=$concurrency',
-      ],
-      workingDirectory: pkgPath,
-      runInShell: true,
-    );
-    _logOutput(result);
-    if (result.exitCode != 0) {
-      throw StateError(
-        'flutter test failed (exit ${result.exitCode}) in $pkgPath',
-      );
-    }
+    logger.detail(ansi.cyan('  Running flutter test...'));
+    await _runProcess('flutter', [
+      'test',
+      '--coverage',
+      '--branch-coverage',
+      if (concurrency != null) '--concurrency=$concurrency',
+    ], pkgPath);
   }
 
   Future<void> _runDart(String pkgPath, String lcovOutputPath) async {
     const tempCoverageDir = '.dart_coverage_temp';
-    final tempPath = p.join(pkgPath, tempCoverageDir);
+    final tempDir = Directory(p.join(pkgPath, tempCoverageDir));
 
     // Clean previous run
-    final tempDir = Directory(tempPath);
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
 
     // Step 1: run dart test with coverage collection
-    _log('Running dart test in $pkgPath...');
-    final testResult = await Process.run(
-      'dart',
-      [
-        'test',
-        '--coverage=$tempCoverageDir',
-        '--branch-coverage',
-        if (concurrency != null) '--concurrency=$concurrency',
-      ],
+    logger.detail(ansi.cyan('  Running dart test...'));
+    await _runProcess('dart', [
+      'test',
+      '--coverage=$tempCoverageDir',
+      '--branch-coverage',
+      if (concurrency != null) '--concurrency=$concurrency',
+    ], pkgPath);
+
+    // Step 2: convert raw coverage JSON to LCOV
+    logger.detail(ansi.dim('  Converting coverage to LCOV...'));
+    await _converter.convert(
+      coverageJsonDir: tempDir.path,
+      lcovOutputPath: lcovOutputPath,
+      reportRoot: pkgPath,
+    );
+
+    // Clean up temp dir
+    if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+  }
+
+  /// Runs [executable] with [args] in [pkgPath], streaming output live and
+  /// throwing on a non-zero exit code.
+  Future<void> _runProcess(
+    String executable,
+    List<String> args,
+    String pkgPath,
+  ) async {
+    final process = await Process.start(
+      executable,
+      args,
       workingDirectory: pkgPath,
       runInShell: true,
     );
-    _logOutput(testResult);
-    if (testResult.exitCode != 0) {
+
+    // Capture output (and stream it live when verbose). Both pipes are drained
+    // concurrently so the child never blocks on a full OS buffer.
+    final captured = StringBuffer();
+    final stdoutDone = _forward(process.stdout, captured);
+    final stderrDone = _forward(process.stderr, captured);
+
+    final exitCode = await process.exitCode;
+    await stdoutDone;
+    await stderrDone;
+
+    if (exitCode != 0) {
+      // When verbose the output already streamed live; otherwise include it so
+      // the failure is diagnosable without re-running with -v.
+      final detail = logger.isVerbose
+          ? ''
+          : '\n${captured.toString().trimRight()}';
       throw StateError(
-        'dart test failed (exit ${testResult.exitCode}) in $pkgPath',
+        '$executable ${args.first} failed (exit $exitCode) in $pkgPath$detail',
       );
     }
-
-    // Step 2: convert raw coverage JSON to LCOV via coverage package API
-    final jsonFiles = tempDir.existsSync()
-        ? tempDir
-              .listSync(recursive: true)
-              .whereType<File>()
-              .where((f) => f.path.endsWith('.json'))
-              .toList()
-        : <File>[];
-
-    final lcovDir = Directory(p.dirname(lcovOutputPath));
-    lcovDir.createSync(recursive: true);
-
-    if (jsonFiles.isEmpty) {
-      File(lcovOutputPath).writeAsStringSync('');
-      return;
-    }
-
-    _log('Converting coverage to LCOV...');
-    final hitmap = await HitMap.parseFiles(jsonFiles);
-    final resolver = await Resolver.create(
-      packagesPath: _packageConfigPath(pkgPath),
-      sdkRoot: _sdkRoot(),
-    );
-    final lcovContent = hitmap.formatLcov(
-      resolver,
-      reportOn: [p.join(pkgPath, 'lib')],
-    );
-    File(lcovOutputPath).writeAsStringSync(lcovContent);
-
-    // Clean up temp dir
-    tempDir.deleteSync(recursive: true);
   }
 
-  /// Returns the package_config.json path for [pkgPath].
-  ///
-  /// In a pub workspace the file lives at the workspace root, not inside each
-  /// sub-package. Walk up the directory tree until we find one.
-  String _packageConfigPath(String pkgPath) {
-    var dir = Directory(pkgPath);
-    while (true) {
-      final candidate = p.join(dir.path, '.dart_tool', 'package_config.json');
-      if (File(candidate).existsSync()) return candidate;
-      final parent = dir.parent;
-      if (parent.path == dir.path) break; // filesystem root
-      dir = parent;
-    }
-    // Fall back to expected location so the original error message is preserved.
-    return p.join(pkgPath, '.dart_tool', 'package_config.json');
-  }
-
-  String? _sdkRoot() {
-    try {
-      // dart executable is at <sdk>/bin/dart
-      return p.dirname(p.dirname(Platform.resolvedExecutable));
-    } catch (_) {
-      return null;
-    }
-  }
-
-  void _log(String message) {
-    if (verbose) print(message);
-  }
-
-  void _logOutput(ProcessResult result) {
-    if (!verbose) return;
-    if (result.stdout.toString().isNotEmpty) print(result.stdout);
-    if (result.stderr.toString().isNotEmpty) print(result.stderr);
+  /// Consumes a process output [stream], capturing every line into [sink] and
+  /// also forwarding it to the logger live when verbose.
+  Future<void> _forward(Stream<List<int>> stream, StringBuffer sink) {
+    return stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .forEach((line) {
+          sink.writeln(line);
+          logger.detail(line); // streamed live only when verbose
+        });
   }
 }

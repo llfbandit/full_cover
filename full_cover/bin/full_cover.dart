@@ -31,7 +31,13 @@ void main(List<String> arguments) async {
       'verbose',
       abbr: 'v',
       negatable: false,
-      help: 'Print progress details.',
+      help: 'Print full detail, including test output.',
+    )
+    ..addFlag(
+      'quiet',
+      abbr: 'q',
+      negatable: false,
+      help: 'Only print warnings and errors.',
     )
     ..addFlag(
       'help',
@@ -44,13 +50,13 @@ void main(List<String> arguments) async {
   try {
     results = argParser.parse(arguments);
   } on FormatException catch (e) {
-    print('Error: ${e.message}');
+    print(ansi.red('Error: ${e.message}'));
     print(argParser.usage);
     exit(1);
   }
 
   if (results['help'] as bool) {
-    print('full_cover — Dart/Flutter workspace coverage tool\n');
+    print(ansi.header('full_cover — Dart/Flutter workspace coverage tool\n'));
     print(argParser.usage);
     exit(0);
   }
@@ -59,26 +65,37 @@ void main(List<String> arguments) async {
   final clean = results['clean'] as bool;
   final skipTests = results['no-test'] as bool;
   final verbose = results['verbose'] as bool;
+  final quiet = results['quiet'] as bool;
   final concurrency = results['concurrency'] as String?;
+
+  final level = verbose
+      ? LogLevel.verbose
+      : quiet
+      ? LogLevel.quiet
+      : LogLevel.normal;
 
   final FullCoverConfig config;
   try {
     config = FullCoverConfig.fromFile(configPath);
   } catch (e) {
-    print('Error loading config: $e');
+    print(ansi.red('Error loading config: $e'));
     exit(1);
   }
 
   try {
-    final runner = FullCoverRunner(verbose: verbose, skipTests: skipTests, concurrency: concurrency);
+    final runner = FullCoverRunner(
+      level: level,
+      skipTests: skipTests,
+      concurrency: concurrency,
+    );
     if (clean) {
       await runner.clean(config);
     } else {
       await runner.run(config);
     }
   } catch (e, st) {
-    print('Error: $e');
-    if (verbose) print(st);
+    print(ansi.red('Error: $e'));
+    if (verbose) print(ansi.dim('$st'));
     exit(1);
   }
 }

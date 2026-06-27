@@ -1,11 +1,14 @@
+export 'src/ansi.dart';
 export 'src/config/config.dart';
 export 'src/config/package_config.dart';
 export 'src/coverage/branch_analyzer.dart';
+export 'src/coverage/lcov_converter.dart';
 export 'src/coverage/lcov_filter.dart';
 export 'src/coverage/lcov_injector.dart';
 export 'src/coverage/lcov_merger.dart';
 export 'src/coverage/lcov_parser.dart';
 export 'src/coverage/lcov_record.dart';
 export 'src/full_cover_runner.dart';
+export 'src/logger.dart';
 export 'src/reporter/html_reporter.dart';
 export 'src/runner/test_runner.dart';
