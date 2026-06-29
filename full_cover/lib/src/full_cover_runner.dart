@@ -223,7 +223,7 @@ class FullCoverRunner {
     var next = 0;
     Future<void> worker() async {
       while (true) {
-        final index = next++; // single-threaded event loop: no race here
+        final index = next++;
         if (index >= items.length) return;
         results[index] = await task(items[index]);
       }
@@ -305,19 +305,28 @@ class FullCoverRunner {
       } catch (_) {}
     }
 
-    return paths.map((pkgPath) {
-      final excludes = <String>[];
-      // Relative path from workspace root — matched against package: globs.
+    final result = <PackageConfig>[];
+
+    for (final pkgPath in paths) {
+      // Relative path from workspace root — matched against package globs.
       final rel = p.relative(pkgPath, from: workspaceRoot);
       final key = rel == '.' ? '.' : rel.replaceAll(r'\', '/');
 
+      final excludes = <String>[];
       for (final ec in excludeConfigs) {
         final glob = Glob(ec.package);
         if (glob.matches(key) || glob.matches(p.basename(pkgPath))) {
           excludes.addAll(ec.excludes);
         }
       }
-      return PackageConfig(path: pkgPath, excludes: excludes);
-    }).toList();
+
+      // excludes == ['**'] with no negations means "skip entirely" — avoids
+      // running tests on packages the user has excluded without exceptions.
+      if (excludes.length == 1 && excludes.first == '**') continue;
+
+      result.add(PackageConfig(path: pkgPath, excludes: excludes));
+    }
+
+    return result;
   }
 }

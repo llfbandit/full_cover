@@ -49,7 +49,7 @@ Create `full_cover.yaml` alongside your root `pubspec.yaml` ([Template](https://
 |-------------------------------|------------|---------------------------------------------------------------------|
 | `package_excludes[].package`  | —          | Package path relative to workspace root                             |
 | `package_excludes[].excludes` | —          | Glob patterns to exclude within that package                        |
-| `global_excludes.files`       | —          | Glob patterns applied to every package                              |
+| `global_excludes`             | —          | Glob patterns applied to every package                              |
 | `output.directory`            | `coverage` | Base folder for all coverage output                                 |
 | `output.global`               | `true`     | Write merged `lcov.info` to `output.directory`                      |
 | `output.html.global`          | `false`    | Generate merged HTML report under `output.directory/html.directory` |

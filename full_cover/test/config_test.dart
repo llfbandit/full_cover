@@ -34,17 +34,48 @@ output:
       expect(config.htmlDirectory, 'report');
     });
 
-    test('parses global_excludes', () {
+    test('parses global_excludes as a direct list', () {
       final config = _parse('''
 global_excludes:
-  files:
-    - "**/*.g.dart"
-    - "**/*.freezed.dart"
+  - "**/*.g.dart"
+  - "**/*.freezed.dart"
 ''');
       expect(config.globalFileExcludes, ['**/*.g.dart', '**/*.freezed.dart']);
     });
 
-    test('parses package_excludes', () {
+    test('parses global_excludes with pattern/except entries', () {
+      final config = _parse('''
+global_excludes:
+  - "**/*.g.dart"
+  - pattern: "**/ui/**"
+    except:
+      - "**_bloc.dart"
+''');
+      expect(config.globalFileExcludes, [
+        '**/*.g.dart',
+        '**/ui/**',
+        '!**_bloc.dart',
+      ]);
+    });
+
+    test('package_excludes without excludes key defaults to ["**"]', () {
+      final config = _parse('''
+package_excludes:
+  - package: "packages/testing"
+''');
+      expect(config.packageExcludes.first.excludes, ['**']);
+    });
+
+    test('package_excludes with empty excludes defaults to ["**"]', () {
+      final config = _parse('''
+package_excludes:
+  - package: "packages/testing"
+    excludes: []
+''');
+      expect(config.packageExcludes.first.excludes, ['**']);
+    });
+
+    test('parses package_excludes with plain strings', () {
       final config = _parse('''
 package_excludes:
   - package: "packages/my_pkg"
@@ -54,6 +85,23 @@ package_excludes:
       expect(config.packageExcludes, hasLength(1));
       expect(config.packageExcludes.first.package, 'packages/my_pkg');
       expect(config.packageExcludes.first.excludes, ['lib/src/gen/**']);
+    });
+
+    test('parses package_excludes with pattern/except entries', () {
+      final config = _parse('''
+package_excludes:
+  - package: "packages/infra"
+    excludes:
+      - pattern: "**"
+        except:
+          - "**/migrations.dart"
+          - "**/sse/**"
+''');
+      expect(config.packageExcludes.first.excludes, [
+        '**',
+        '!**/migrations.dart',
+        '!**/sse/**',
+      ]);
     });
 
     test('parses limits section', () {

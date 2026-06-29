@@ -17,10 +17,45 @@ class PackageExcludeConfig {
 
   factory PackageExcludeConfig.fromYaml(dynamic yaml) {
     final map = yaml as YamlMap;
-    final rawExcludes = map['excludes'] as YamlList?;
+    final expanded = expandPatternList(map['excludes'] as YamlList?);
     return PackageExcludeConfig(
       package: map['package'] as String,
-      excludes: rawExcludes?.map((e) => e as String).toList() ?? [],
+      excludes: expanded.isEmpty ? const ['**'] : expanded,
     );
   }
+}
+
+/// Expands a YAML pattern list into a flat [List<String>].
+///
+/// Each entry can be a plain string (including negations like `"!foo"`) or a
+/// map with a `pattern` key and an optional `except` key that expands into
+/// negation entries:
+///
+/// ```yaml
+/// - "**/*.g.dart"
+/// - pattern: "**/ui/**"
+///   except:
+///     - "**_bloc.dart"
+/// ```
+///
+/// becomes `["**/*.g.dart", "**/ui/**", "!**_bloc.dart"]`.
+List<String> expandPatternList(YamlList? items) {
+  if (items == null) return const [];
+  final result = <String>[];
+  for (final item in items) {
+    if (item is String) {
+      result.add(item);
+    } else if (item is YamlMap) {
+      result.add(item['pattern'] as String);
+      final except = item['except'];
+      if (except is String) {
+        result.add('!$except');
+      } else if (except is YamlList) {
+        for (final e in except) {
+          result.add('!${e as String}');
+        }
+      }
+    }
+  }
+  return result;
 }

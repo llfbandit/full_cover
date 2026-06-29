@@ -53,10 +53,8 @@ class FullCoverConfig {
         rawPkgExcludes?.map(PackageExcludeConfig.fromYaml).toList() ??
         <PackageExcludeConfig>[];
 
-    final globalExcludes = yaml['global_excludes'] as YamlMap?;
-    final rawGlobalFiles = globalExcludes?['files'] as YamlList?;
     final globalFileExcludes =
-        rawGlobalFiles?.map((e) => e as String).toList() ?? <String>[];
+        expandPatternList(yaml['global_excludes'] as YamlList?);
 
     final output = yaml['output'] as YamlMap?;
     final globalLcov = output?['global'] as bool? ?? true;

@@ -1,13 +1,24 @@
+# Global file/folder exclusions applied to every package.
+# Entries can be plain glob strings or a pattern+except block.
 global_excludes:
-  files:
-    - "**/*.g.dart"               # exclude all generated files across all packages
-    - "**/*.freezed.dart"
-#    - "!**/foo/*.g.dart"          # re-include generated files in foo (order matters!)
+  - "**/*.g.dart"               # exclude all generated files
+  - "**/*.freezed.dart"
+#   - pattern: "**/ui/**"         # exclude ui folders...
+#     except:
+#       - "**_bloc.dart"          # ...but keep blocs inside them
 
+# Per-package exclusions (glob pattern on the package path).
+# Omitting or leaving excludes empty skips the entire package (**).
 # package_excludes:
-#   - package: "packages/greeter"   # glob pattern matching the package path
+#   - package: "packages/testing" # skip entirely (no excludes key)
+#   - package: "packages/sse"
 #     excludes:
-#       - "lib/src/un*.dart"        # file/folder glob patterns within that package
+#       - pattern: "**"           # exclude everything...
+#         except:
+#           - "**/keep.dart"      # ...except keep.dart
+#   - package: "packages/ui_components"
+#     excludes:
+#       - "lib/src/generated/**"  # plain glob string
 
 output:
   global: true                    # write merged lcov.info at output.directory/lcov.info

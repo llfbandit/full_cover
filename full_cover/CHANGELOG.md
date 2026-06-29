@@ -1,3 +1,6 @@
+## 1.2.0
+- feat: Allow negative pattern to re-include files/folders excluded by a previous glob.
+
 ## 1.1.0
 - feat: Allow negative pattern to re-include files/folders excluded by a previous glob.
 - perf: Improvement by filtering sooner.
