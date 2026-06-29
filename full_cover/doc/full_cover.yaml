@@ -2,6 +2,7 @@ global_excludes:
   files:
     - "**/*.g.dart"               # exclude all generated files across all packages
     - "**/*.freezed.dart"
+#    - "!**/foo/*.g.dart"          # re-include generated files in foo (order matters!)
 
 # package_excludes:
 #   - package: "packages/greeter"   # glob pattern matching the package path

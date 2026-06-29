@@ -11,18 +11,49 @@ class LcovFilter {
   }) {
     if (filePatterns.isEmpty) return records;
 
-    final globs = filePatterns.map(Glob.new).toList();
+    final parsed = _parsePatterns(filePatterns);
 
-    return records.where((record) {
-      final sf = record.sourceFile;
-      for (final glob in globs) {
-        if (_matches(glob, sf, packagePath)) return false;
-      }
-      return true;
-    }).toList();
+    return records
+        .where((r) => !isExcluded(r.sourceFile, parsed, packagePath))
+        .toList();
   }
 
-  bool _matches(Glob glob, String filePath, String? packagePath) {
+  /// Returns true when [filePath] should be excluded given [patterns].
+  ///
+  /// Patterns are evaluated in order; the last matching pattern wins.
+  /// A pattern prefixed with `!` negates (re-includes) a prior exclusion.
+  static bool isExcluded(
+    String filePath,
+    List<({Glob glob, bool negate})> patterns,
+    String? packagePath,
+  ) {
+    var excluded = false;
+    for (final p in patterns) {
+      if (_matchesPath(p.glob, filePath, packagePath)) {
+        excluded = !p.negate;
+      }
+    }
+    return excluded;
+  }
+
+  /// Parses raw pattern strings into (glob, negate) pairs.
+  static List<({Glob glob, bool negate})> parsePatterns(
+    List<String> filePatterns,
+  ) => _parsePatterns(filePatterns);
+
+  static List<({Glob glob, bool negate})> _parsePatterns(
+    List<String> filePatterns,
+  ) {
+    return [
+      for (final raw in filePatterns)
+        (
+          glob: Glob(raw.startsWith('!') ? raw.substring(1) : raw),
+          negate: raw.startsWith('!'),
+        ),
+    ];
+  }
+
+  static bool _matchesPath(Glob glob, String filePath, String? packagePath) {
     if (glob.matches(filePath)) return true;
 
     if (packagePath != null) {
