@@ -147,18 +147,22 @@ class FullCoverRunner {
     if (skipTests) {
       final lcovFile = File(p.join(pkgPath, 'coverage', 'lcov.info'));
       if (!lcovFile.existsSync()) {
-        log.detail(
-          ansi.yellow('  No coverage data at ${lcovFile.path}, skipping.'),
-        );
-        return null;
+        log.detail(ansi.yellow('  No coverage data at ${lcovFile.path}.'));
+        records = [];
       }
       records = parser.parse(lcovFile.readAsStringSync());
     } else {
-      final lcovPath = await TestRunner(
-        logger: log,
-        concurrency: concurrency,
-      ).run(pkg);
-      records = parser.parse(File(lcovPath).readAsStringSync());
+      final testDir = Directory(p.join(pkgPath, 'test'));
+      if (!testDir.existsSync()) {
+        log.detail(ansi.yellow('  No test/ directory.'));
+        records = [];
+      } else {
+        final lcovPath = await TestRunner(
+          logger: log,
+          concurrency: concurrency,
+        ).run(pkg);
+        records = parser.parse(File(lcovPath).readAsStringSync());
+      }
     }
 
     // Flutter's lcov.info uses relative SF: paths (e.g. lib/src/foo.dart).
@@ -170,20 +174,28 @@ class FullCoverRunner {
 
     log.detail(ansi.dim('  Parsed ${records.length} source records.'));
 
-    // Inject zero-coverage files before filtering so excludes also apply to them
-    records = await LcovInjector().inject(records, pkgPath);
+    final filePatterns = [...config.globalFileExcludes, ...pkg.excludes];
+
+    // Inject zero-coverage for uncovered files, skipping excluded ones so we
+    // never read a file that the filter would discard anyway.
+    records = await LcovInjector().inject(
+      records,
+      pkgPath,
+      filePatterns: filePatterns,
+    );
     log.detail(ansi.dim('  After injection: ${records.length} records.'));
+
+    // Filter before branch analysis so the AST parser never runs on excluded files.
+    records = LcovFilter().apply(
+      records: records,
+      filePatterns: filePatterns,
+      packagePath: pkgPath,
+    );
+    log.detail(ansi.dim('  After filtering: ${records.length} records.'));
 
     // Replace VM line-level branch data with condition-level branch data
     final branchAnalyzer = BranchAnalyzer();
     records = records.map(branchAnalyzer.analyze).toList();
-
-    records = LcovFilter().apply(
-      records: records,
-      filePatterns: [...config.globalFileExcludes, ...pkg.excludes],
-      packagePath: pkgPath,
-    );
-    log.detail(ansi.dim('  After filtering: ${records.length} records.'));
 
     if (config.htmlPackage && records.isNotEmpty) {
       final pkgOutDir = p.join(pkgPath, 'coverage', 'html');

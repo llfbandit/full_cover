@@ -72,4 +72,41 @@ void main() {
     final result = await injector.inject([], tempDir.path);
     expect(result, isEmpty);
   });
+
+  group('filePatterns', () {
+    test('skips untracked files matching a pattern', () async {
+      writeLib('generated.g.dart', 'int x = 1;\n');
+      writeLib('normal.dart', 'int y = 2;\n');
+
+      final result = await injector.inject(
+        [],
+        tempDir.path,
+        filePatterns: ['**/*.g.dart'],
+      );
+      expect(result, hasLength(1));
+      expect(result.first.sourceFile, contains('normal.dart'));
+    });
+
+    test('does not re-inject a tracked file that matches a pattern', () async {
+      final file = writeLib('generated.g.dart', 'int x = 1;\n');
+      final existing = LcovRecord(sourceFile: abs(file), lines: [LineData(1, 1)]);
+
+      final result = await injector.inject(
+        [existing],
+        tempDir.path,
+        filePatterns: ['**/*.g.dart'],
+      );
+      // The tracked record is preserved; the file is NOT re-added as zero-coverage.
+      expect(result, hasLength(1));
+      expect(result.first.linesHit, 1);
+    });
+
+    test('no patterns skips nothing', () async {
+      writeLib('a.dart', 'int a = 1;\n');
+      writeLib('b.dart', 'int b = 2;\n');
+
+      final result = await injector.inject([], tempDir.path, filePatterns: []);
+      expect(result, hasLength(2));
+    });
+  });
 }
