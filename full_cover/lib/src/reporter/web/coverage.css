@@ -99,6 +99,11 @@ a:hover {
 .files {
   padding: 16px 0;
 }
+.table-toolbar {
+  padding: 0 4px 6px;
+  font-size: 12px;
+  text-align: right;
+}
 table {
   width: 100%;
   border-collapse: collapse;
@@ -156,9 +161,12 @@ tr.pkg-header td {
 }
 tr.pkg-header:hover td { background: #e8e8e8; }
 .toggle-icon {
-  display: inline-block;
-  font-size: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 14px;
+  height: 14px;
+  font-size: 9px;
   transition: transform 0.15s ease;
   vertical-align: middle;
 }

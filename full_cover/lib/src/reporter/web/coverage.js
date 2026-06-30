@@ -16,6 +16,10 @@
 
   // ---- collapse / expand -------------------------------------------------
 
+  function pkgGroupIds() {
+    return Array.from(tbody.querySelectorAll('tr.pkg-header')).map(r => r.dataset.group);
+  }
+
   function applyCollapsedState() {
     tbody.querySelectorAll('tr.pkg-header').forEach(headerRow => {
       const g = headerRow.dataset.group;
@@ -24,6 +28,12 @@
       tbody.querySelectorAll(`tr[data-group="${g}"]:not(.pkg-header)`)
           .forEach(row => { row.style.display = collapsed ? 'none' : ''; });
     });
+    const toggleAll = document.getElementById('toggle-all-packages');
+    if (toggleAll) {
+      const ids = pkgGroupIds();
+      const allCollapsed = ids.length > 0 && ids.every(g => collapsedGroups.has(g));
+      toggleAll.textContent = allCollapsed ? 'Expand all' : 'Collapse all';
+    }
   }
 
   tbody.querySelectorAll('tr.pkg-header').forEach(headerRow => {
@@ -34,6 +44,17 @@
       applyCollapsedState();
     });
   });
+
+  const toggleAllEl = document.getElementById('toggle-all-packages');
+  if (toggleAllEl) {
+    toggleAllEl.addEventListener('click', e => {
+      e.preventDefault();
+      const ids = pkgGroupIds();
+      const allCollapsed = ids.every(g => collapsedGroups.has(g));
+      ids.forEach(g => { if (allCollapsed) collapsedGroups.delete(g); else collapsedGroups.add(g); });
+      applyCollapsedState();
+    });
+  }
 
   // ---- sort --------------------------------------------------------------
 

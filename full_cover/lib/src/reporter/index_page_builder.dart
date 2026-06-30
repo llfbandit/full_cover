@@ -70,6 +70,13 @@ class IndexPageBuilder {
     body.writeln('</div>');
 
     body.writeln('<div class="files">');
+    if (hasTree) {
+      body.writeln(
+        '<div class="table-toolbar">'
+        '<a id="toggle-all-packages" href="#">Collapse all</a>'
+        '</div>',
+      );
+    }
     body.writeln('<table>');
     body.writeln(
       '<thead><tr>'
