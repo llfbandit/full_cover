@@ -65,7 +65,7 @@ class TestRunner {
     final tempDir = Directory(p.join(pkgPath, tempCoverageDir));
 
     // Clean previous run
-    if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    if (tempDir.existsSync()) await tempDir.delete(recursive: true);
 
     // Step 1: run dart test with coverage collection
     logger.detail(ansi.cyan('  Running dart test...'));
@@ -86,7 +86,7 @@ class TestRunner {
     );
 
     // Clean up temp dir
-    if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    if (tempDir.existsSync()) await tempDir.delete(recursive: true);
   }
 
   /// Runs [executable] with [args] in [pkgPath], streaming output live and
@@ -103,9 +103,9 @@ class TestRunner {
       runInShell: true,
     );
 
-    // Capture output (and stream it live when verbose). Both pipes are drained
-    // concurrently so the child never blocks on a full OS buffer.
-    final captured = StringBuffer();
+    // In verbose mode output streams live; otherwise it's captured
+    // so failures are diagnosable without re-running with -v.
+    final captured = logger.isVerbose ? null : StringBuffer();
     final stdoutDone = _forward(process.stdout, captured);
     final stderrDone = _forward(process.stderr, captured);
 
@@ -114,26 +114,25 @@ class TestRunner {
     await stderrDone;
 
     if (exitCode != 0) {
-      // When verbose the output already streamed live; otherwise include it so
-      // the failure is diagnosable without re-running with -v.
-      final detail = logger.isVerbose
-          ? ''
-          : '\n${captured.toString().trimRight()}';
+      final detail = captured != null
+          ? '\n${captured.toString().trimRight()}'
+          : '';
       throw StateError(
         '$executable ${args.first} failed (exit $exitCode) in $pkgPath$detail',
       );
     }
   }
 
-  /// Consumes a process output [stream], capturing every line into [sink] and
-  /// also forwarding it to the logger live when verbose.
-  Future<void> _forward(Stream<List<int>> stream, StringBuffer sink) {
+  /// Consumes a process output [stream]. Lines are forwarded to the logger
+  /// live when verbose; when [sink] is non-null they are also buffered for
+  /// inclusion in error messages.
+  Future<void> _forward(Stream<List<int>> stream, StringBuffer? sink) {
     return stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .forEach((line) {
-          sink.writeln(line);
-          logger.detail(line); // streamed live only when verbose
+          sink?.writeln(line);
+          logger.detail(line);
         });
   }
 }
