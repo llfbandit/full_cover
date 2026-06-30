@@ -329,6 +329,80 @@ bool f(bool x) {
     expect(trueArm.hits, 3); // max(1, 3, 2)
   });
 
+  test('strips abstract method declaration lines from line coverage', () {
+    final file = writeSource('abstract_method.dart', '''
+abstract class Shape {
+  double area();
+}
+''');
+    // The VM may emit a coverable position for the abstract declaration (line 2).
+    // It must be removed — there is no executable body to cover.
+    final result = analyzer.analyze(record(file.path, {2: 1}));
+    final lines = {for (final l in result.lines) l.line};
+    expect(lines, isNot(contains(2)));
+    expect(result.functionsFound, 0);
+  });
+
+  test('strips abstract lines but keeps concrete ones in the same class', () {
+    final file = writeSource('mixed_abstract.dart', '''
+abstract class Shape {
+  double area();
+  String name() {
+    return 'shape';
+  }
+}
+''');
+    final result = analyzer.analyze(record(file.path, {2: 1, 3: 2, 4: 2}));
+    final byLine = {for (final l in result.lines) l.line: l.hits};
+    expect(byLine.containsKey(2), isFalse, reason: 'abstract decl stripped');
+    expect(byLine[3], 2);
+    expect(byLine[4], 2);
+    expect(result.functionsFound, 1); // only the concrete method
+    expect(result.functions.single.name, 'Shape.name');
+  });
+
+  test('strips all lines of a multi-line abstract declaration', () {
+    final file = writeSource('multiline_abstract.dart', '''
+abstract class Foo {
+  Map<String, dynamic>
+      toJson();
+}
+''');
+    final result = analyzer.analyze(record(file.path, {2: 1, 3: 1}));
+    final lines = {for (final l in result.lines) l.line};
+    expect(lines, isNot(contains(2)));
+    expect(lines, isNot(contains(3)));
+  });
+
+  test('fully-abstract file produces an empty record (no lines/functions/branches)', () {
+    final file = writeSource('all_abstract.dart', '''
+abstract class Repository {
+  Future<List<String>> fetchAll();
+  Future<void> save(String item);
+  int get count;
+}
+''');
+    // Every member is abstract — after stripping, the record must be empty so
+    // the runner can drop it rather than reporting it as 100% covered.
+    final result = analyzer.analyze(record(file.path, {2: 1, 3: 1, 4: 1}));
+    expect(result.lines, isEmpty);
+    expect(result.functions, isEmpty);
+    expect(result.branches, isEmpty);
+  });
+
+  test('strips abstract getter declaration lines', () {
+    final file = writeSource('abstract_getter.dart', '''
+abstract class Foo {
+  int get value;
+  set value(int v);
+}
+''');
+    final result = analyzer.analyze(record(file.path, {2: 1, 3: 1}));
+    final lines = {for (final l in result.lines) l.line};
+    expect(lines, isNot(contains(2)));
+    expect(lines, isNot(contains(3)));
+  });
+
   test('does not override existing VM line hits when backfilling', () {
     final file = writeSource('present.dart', '''
 String summary(bool a) {

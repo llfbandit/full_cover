@@ -195,7 +195,10 @@ class FullCoverRunner {
 
     // Replace VM line-level branch data with condition-level branch data
     final branchAnalyzer = BranchAnalyzer();
-    records = records.map(branchAnalyzer.analyze).toList();
+    records = records
+        .map(branchAnalyzer.analyze)
+        .where((r) => r.lines.isNotEmpty || r.functions.isNotEmpty || r.branches.isNotEmpty)
+        .toList();
 
     if (config.htmlPackage && records.isNotEmpty) {
       final pkgOutDir = p.join(pkgPath, 'coverage', 'html');

@@ -66,7 +66,10 @@ class BranchAnalyzer {
     // pass already derives how often control reached each such line, so we add
     // a DA entry for any inferred line the VM didn't report. We never override
     // real VM hits — only fill genuine gaps.
-    final lines = _withBackfilledLines(record.lines, visitor.inferredLines);
+    var lines = _withBackfilledLines(record.lines, visitor.inferredLines);
+    if (visitor.abstractLines.isNotEmpty) {
+      lines = lines.where((l) => !visitor.abstractLines.contains(l.line)).toList();
+    }
 
     return record.copyWith(
       lines: lines,
@@ -101,6 +104,11 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   /// backfill statement lines the VM omitted from its line data.
   final Map<int, int> inferredLines = {};
 
+  /// Lines belonging to abstract member declarations (EmptyFunctionBody).
+  /// The VM sometimes emits coverable positions for these even though they
+  /// have no executable body; they are stripped from line coverage.
+  final Set<int> abstractLines = {};
+
   int _blockId = 0;
 
   _BranchVisitor(
@@ -109,6 +117,14 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     this.hasVmBranches,
     this.lineInfo,
   );
+
+  void _collectAbstractLines(AstNode node) {
+    final start = _lineOf(node.beginToken.offset);
+    final end = _lineOf(node.endToken.offset);
+    for (var i = start; i <= end; i++) {
+      abstractLines.add(i);
+    }
+  }
 
   /// Records [hits] for [line], keeping the highest count if it's seen more
   /// than once (any path that executed it wins over one that didn't).
@@ -319,7 +335,9 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   @override
   void visitFunctionDeclaration(FunctionDeclaration node) {
     final body = node.functionExpression.body;
-    if (body is! EmptyFunctionBody) {
+    if (body is EmptyFunctionBody) {
+      _collectAbstractLines(node);
+    } else {
       final declLine = _lineOf(node.beginToken.offset);
       functions.add(
         FunctionData(
@@ -335,7 +353,9 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   @override
   void visitMethodDeclaration(MethodDeclaration node) {
     final body = node.body;
-    if (body is! EmptyFunctionBody) {
+    if (body is EmptyFunctionBody) {
+      _collectAbstractLines(node);
+    } else {
       final typeName = _enclosingTypeName(node);
       final name = typeName.isNotEmpty
           ? '$typeName.${node.name.lexeme}'
