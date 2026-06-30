@@ -12,10 +12,14 @@ import '../logger.dart';
 class TestRunner {
   final Logger logger;
   final String? concurrency;
+  final bool crossPackageCoverage;
   final LcovConverter _converter;
 
-  const TestRunner({this.logger = const Logger(), this.concurrency})
-    : _converter = const LcovConverter();
+  const TestRunner({
+    this.logger = const Logger(),
+    this.concurrency,
+    this.crossPackageCoverage = true,
+  }) : _converter = const LcovConverter();
 
   /// Runs tests for [pkg] and returns the path to the generated lcov.info.
   Future<String> run(PackageConfig pkg) async {
@@ -78,6 +82,7 @@ class TestRunner {
       coverageJsonDir: tempDir.path,
       lcovOutputPath: lcovOutputPath,
       reportRoot: pkgPath,
+      crossPackageCoverage: crossPackageCoverage,
     );
 
     // Clean up temp dir

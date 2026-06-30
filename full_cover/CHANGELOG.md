@@ -1,3 +1,6 @@
+## 1.4.0
+feat: Add cross package coverage option.
+
 ## 1.3.0
 feat: HTML - Back and Index links are always available.
 feat: HTML - Add callapse/expand to packages.

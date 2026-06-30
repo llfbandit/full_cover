@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:coverage/coverage.dart';
@@ -18,6 +19,7 @@ class LcovConverter {
     required String coverageJsonDir,
     required String lcovOutputPath,
     required String reportRoot,
+    bool crossPackageCoverage = true,
   }) async {
     final jsonFiles = _jsonFiles(Directory(coverageJsonDir));
 
@@ -33,11 +35,46 @@ class LcovConverter {
       packagesPath: _packageConfigPath(reportRoot),
       sdkRoot: _sdkRoot(),
     );
-    final lcovContent = hitmap.formatLcov(
-      resolver,
-      reportOn: [p.join(reportRoot, 'lib')],
-    );
+    final configPath = _packageConfigPath(reportRoot);
+    final reportOn = [
+      p.join(reportRoot, 'lib'),
+      if (crossPackageCoverage) ..._localLibDirs(configPath, reportRoot),
+    ];
+    final lcovContent = hitmap.formatLcov(resolver, reportOn: reportOn);
     File(lcovOutputPath).writeAsStringSync(lcovContent);
+  }
+
+  /// Returns the `lib/` directories of local (non-pub-cache) packages listed
+  /// in [configPath], excluding [reportRoot] itself (already in `reportOn`).
+  ///
+  /// In a Dart workspace `package_config.json`, local packages use a relative
+  /// `rootUri` (e.g. `"../other_pkg/"`). Pub-cache entries use an absolute
+  /// `file:///…` URI — those are skipped.
+  List<String> _localLibDirs(String configPath, String reportRoot) {
+    final file = File(configPath);
+    if (!file.existsSync()) return [];
+    try {
+      final json = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      final packages =
+          (json['packages'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      final configDir = p.dirname(configPath); // the .dart_tool/ directory
+      final absReportRoot = p.normalize(p.absolute(reportRoot));
+      final result = <String>[];
+      for (final pkg in packages) {
+        final rootUri = pkg['rootUri'] as String?;
+        if (rootUri == null) continue;
+        // Absolute URIs (file://, drive letters, /…) → pub cache or SDK; skip.
+        if (Uri.parse(rootUri).isAbsolute) continue;
+        final rootPath = p.normalize(p.join(configDir, rootUri));
+        if (p.normalize(p.absolute(rootPath)) == absReportRoot) continue;
+        final packageUri = pkg['packageUri'] as String? ?? 'lib/';
+        final libPath = p.normalize(p.join(rootPath, packageUri));
+        if (Directory(libPath).existsSync()) result.add(libPath);
+      }
+      return result;
+    } catch (_) {
+      return [];
+    }
   }
 
   List<File> _jsonFiles(Directory dir) {

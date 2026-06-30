@@ -30,6 +30,11 @@ class FullCoverConfig {
   /// limits — coverage threshold rules for color-coding the HTML report.
   final LimitsConfig limits;
 
+  /// cross_package_coverage — when true, hits exercised on sibling local
+  /// packages during a package's test run are included in the LCOV output,
+  /// so cross-package call paths contribute to coverage of the called package.
+  final bool crossPackageCoverage;
+
   const FullCoverConfig({
     required this.workspaceRoot,
     this.packageExcludes = const [],
@@ -40,6 +45,7 @@ class FullCoverConfig {
     this.htmlPackage = false,
     this.htmlDirectory = 'html',
     this.limits = const LimitsConfig(),
+    this.crossPackageCoverage = true,
   });
 
   factory FullCoverConfig.fromYaml(
@@ -66,6 +72,8 @@ class FullCoverConfig {
     final htmlDirectory = html?['directory'] as String? ?? 'html';
 
     final limits = LimitsConfig.fromYaml(yaml['limits'] as YamlMap?);
+    final crossPackageCoverage =
+        yaml['cross_package_coverage'] as bool? ?? true;
 
     return FullCoverConfig(
       workspaceRoot: workspaceRoot,
@@ -77,6 +85,7 @@ class FullCoverConfig {
       htmlPackage: htmlPackage,
       htmlDirectory: htmlDirectory,
       limits: limits,
+      crossPackageCoverage: crossPackageCoverage,
     );
   }
 

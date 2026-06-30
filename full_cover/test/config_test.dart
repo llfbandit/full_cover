@@ -128,5 +128,15 @@ limits:
       expect(config.limits.line.effectiveMinimum, 30);
       expect(config.limits.line.effectiveAverage, 60);
     });
+
+    test('cross_package_coverage defaults to true', () {
+      final config = _parse('{}');
+      expect(config.crossPackageCoverage, isTrue);
+    });
+
+    test('cross_package_coverage can be disabled', () {
+      final config = _parse('cross_package_coverage: false');
+      expect(config.crossPackageCoverage, isFalse);
+    });
   });
 }

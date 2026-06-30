@@ -61,6 +61,7 @@ Create `full_cover.yaml` alongside your root `pubspec.yaml` ([Template](https://
 | `limits.branch.average`       | `60`       | Branch coverage % at or above which the report is green             |
 | `limits.function.minimum`     | `30`       | Function coverage % below which the report is red                   |
 | `limits.function.average`     | `60`       | Function coverage % at or above which the report is green           |
+| `cross_package_coverage`      | `true`     | Include hits on sibling local packages recorded during each package's test run |
 
 ---
 

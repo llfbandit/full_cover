@@ -20,6 +20,8 @@ global_excludes:
 #     excludes:
 #       - "lib/src/generated/**"  # plain glob string
 
+cross_package_coverage: true      # default. Include hits on sibling local packages recorded during each package's test run.
+
 output:
   global: true                    # write merged lcov.info at output.directory/lcov.info
   directory: coverage             # base folder for coverage outputs

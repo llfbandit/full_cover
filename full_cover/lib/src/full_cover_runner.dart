@@ -160,6 +160,7 @@ class FullCoverRunner {
         final lcovPath = await TestRunner(
           logger: log,
           concurrency: concurrency,
+          crossPackageCoverage: config.crossPackageCoverage,
         ).run(pkg);
         records = parser.parse(File(lcovPath).readAsStringSync());
       }

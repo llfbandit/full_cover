@@ -74,6 +74,104 @@ void main() {
     expect(File(lcovOut).existsSync(), isTrue);
   });
 
+  // Builds a two-package workspace under [root]:
+  //   root/.dart_tool/package_config.json  (lists pkg_a + pkg_b as local, plus a fake pub entry)
+  //   root/pkg_a/lib/a.dart
+  //   root/pkg_b/lib/b.dart
+  // Returns a coverage JSON directory containing hits for both packages,
+  // placed under pkg_a (simulating pkg_a's test run hitting pkg_b code).
+  ({Directory pkgADir, Directory jsonDir}) buildWorkspace(Directory root) {
+    final pkgADir = Directory(p.join(root.path, 'pkg_a'))..createSync();
+    Directory(p.join(pkgADir.path, 'lib')).createSync();
+    File(p.join(pkgADir.path, 'lib', 'a.dart')).writeAsStringSync('int a = 1;\n');
+
+    final pkgBDir = Directory(p.join(root.path, 'pkg_b'))..createSync();
+    Directory(p.join(pkgBDir.path, 'lib')).createSync();
+    File(p.join(pkgBDir.path, 'lib', 'b.dart')).writeAsStringSync('int b = 2;\n');
+
+    Directory(p.join(root.path, '.dart_tool')).createSync();
+    File(p.join(root.path, '.dart_tool', 'package_config.json')).writeAsStringSync(
+      jsonEncode({
+        'configVersion': 2,
+        'packages': [
+          {'name': 'pkg_a', 'rootUri': '../pkg_a/', 'packageUri': 'lib/'},
+          {'name': 'pkg_b', 'rootUri': '../pkg_b/', 'packageUri': 'lib/'},
+          // Absolute URI → pub-cache package, must be ignored.
+          {
+            'name': 'collection',
+            'rootUri': 'file:///pub-cache/collection-1.0/',
+            'packageUri': 'lib/',
+          },
+        ],
+      }),
+    );
+
+    final jsonDir = Directory(p.join(pkgADir.path, 'cov'))..createSync();
+    File(p.join(jsonDir.path, 'cov.json')).writeAsStringSync(
+      jsonEncode({
+        'type': 'CodeCoverage',
+        'coverage': [
+          {
+            'source': 'package:pkg_a/a.dart',
+            'script': {
+              'type': '@Script',
+              'fixedId': true,
+              'id': 's1',
+              'uri': 'package:pkg_a/a.dart',
+              '_kind': 'library',
+            },
+            'hits': [1, 5],
+          },
+          {
+            'source': 'package:pkg_b/b.dart',
+            'script': {
+              'type': '@Script',
+              'fixedId': true,
+              'id': 's2',
+              'uri': 'package:pkg_b/b.dart',
+              '_kind': 'library',
+            },
+            'hits': [1, 3],
+          },
+        ],
+      }),
+    );
+
+    return (pkgADir: pkgADir, jsonDir: jsonDir);
+  }
+
+  test('includes sibling local package hits when crossPackageCoverage is true', () async {
+    final (:pkgADir, :jsonDir) = buildWorkspace(tempDir);
+    final lcovOut = p.join(pkgADir.path, 'coverage', 'lcov.info');
+
+    await converter.convert(
+      coverageJsonDir: jsonDir.path,
+      lcovOutputPath: lcovOut,
+      reportRoot: pkgADir.path,
+      crossPackageCoverage: true,
+    );
+
+    final out = File(lcovOut).readAsStringSync();
+    expect(out, contains('a.dart'), reason: 'own package hits present');
+    expect(out, contains('b.dart'), reason: 'sibling package hits included');
+  });
+
+  test('excludes sibling local package hits when crossPackageCoverage is false', () async {
+    final (:pkgADir, :jsonDir) = buildWorkspace(tempDir);
+    final lcovOut = p.join(pkgADir.path, 'coverage', 'lcov.info');
+
+    await converter.convert(
+      coverageJsonDir: jsonDir.path,
+      lcovOutputPath: lcovOut,
+      reportRoot: pkgADir.path,
+      crossPackageCoverage: false,
+    );
+
+    final out = File(lcovOut).readAsStringSync();
+    expect(out, contains('a.dart'), reason: 'own package hits present');
+    expect(out, isNot(contains('b.dart')), reason: 'sibling package hits excluded');
+  });
+
   test('converts VM coverage json to lcov', () async {
     // A real lib file resolvable via a minimal package_config.
     Directory(p.join(tempDir.path, 'lib')).createSync();
