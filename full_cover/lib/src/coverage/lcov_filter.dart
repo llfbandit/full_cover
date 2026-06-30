@@ -53,6 +53,37 @@ class LcovFilter {
     ];
   }
 
+  /// Removes records that belong to a sibling local package and are excluded
+  /// by that package's own [excludes] or the shared [globalExcludes].
+  ///
+  /// Records that belong to [currentPkgPath] are passed through unchanged —
+  /// they are handled by the caller's regular [apply] step.
+  /// Records that don't belong to any known sibling are also kept.
+  static List<LcovRecord> filterSiblingExcludes({
+    required List<LcovRecord> records,
+    required String currentPkgPath,
+    required Iterable<({String path, List<String> excludes})> siblings,
+    required List<String> globalExcludes,
+  }) {
+    final absCurrent = p.normalize(p.absolute(currentPkgPath));
+    return records.where((r) {
+      final absFile = p.normalize(
+        p.isAbsolute(r.sourceFile) ? r.sourceFile : p.absolute(r.sourceFile),
+      );
+      if (absFile.startsWith(absCurrent)) return true;
+      for (final sibling in siblings) {
+        final absSibling = p.normalize(p.absolute(sibling.path));
+        if (absFile.startsWith(absSibling)) {
+          final patterns = [...globalExcludes, ...sibling.excludes];
+          if (patterns.isEmpty) return true;
+          final parsed = _parsePatterns(patterns);
+          return !isExcluded(absFile, parsed, absSibling);
+        }
+      }
+      return true;
+    }).toList();
+  }
+
   static bool _matchesPath(Glob glob, String filePath, String? packagePath) {
     if (glob.matches(filePath)) return true;
 

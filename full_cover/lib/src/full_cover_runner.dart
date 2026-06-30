@@ -43,7 +43,7 @@ class FullCoverRunner {
     final results = await _mapBounded(
       packages,
       Platform.numberOfProcessors,
-      (pkg) => _processPackage(pkg, config),
+      (pkg) => _processPackage(pkg, config, packages),
     );
     final allPackageRecords = [for (final records in results) ?records];
 
@@ -89,13 +89,20 @@ class FullCoverRunner {
   Future<List<LcovRecord>?> _processPackage(
     PackageConfig pkg,
     FullCoverConfig config,
+    List<PackageConfig> allPackages,
   ) async {
     final buffer = StringBuffer();
     final pkgLogger = Logger(level: level, sink: buffer.writeln);
     final pkgPath = p.normalize(p.absolute(pkg.path));
     final name = p.basename(pkgPath);
     try {
-      final records = await _runPipeline(pkg, pkgPath, config, pkgLogger);
+      final records = await _runPipeline(
+        pkg,
+        pkgPath,
+        config,
+        pkgLogger,
+        allPackages,
+      );
       if (logger.isVerbose) {
         _flushBlock(name, buffer);
       } else {
@@ -138,6 +145,7 @@ class FullCoverRunner {
     String pkgPath,
     FullCoverConfig config,
     Logger log,
+    List<PackageConfig> allPackages,
   ) async {
     log.detail(ansi.dim('Processing $pkgPath'));
 
@@ -175,6 +183,19 @@ class FullCoverRunner {
 
     log.detail(ansi.dim('  Parsed ${records.length} source records.'));
 
+    // Drop sibling-package records that should be excluded under their own
+    // package config, so cross-package hits don't re-introduce excluded files.
+    if (config.crossPackageCoverage) {
+      records = LcovFilter.filterSiblingExcludes(
+        records: records,
+        currentPkgPath: pkgPath,
+        siblings: allPackages.map(
+          (pkg) => (path: pkg.path, excludes: pkg.excludes),
+        ),
+        globalExcludes: config.globalFileExcludes,
+      );
+    }
+
     final filePatterns = [...config.globalFileExcludes, ...pkg.excludes];
 
     // Inject zero-coverage for uncovered files, skipping excluded ones so we
@@ -198,7 +219,12 @@ class FullCoverRunner {
     final branchAnalyzer = BranchAnalyzer();
     records = records
         .map(branchAnalyzer.analyze)
-        .where((r) => r.lines.isNotEmpty || r.functions.isNotEmpty || r.branches.isNotEmpty)
+        .where(
+          (r) =>
+              r.lines.isNotEmpty ||
+              r.functions.isNotEmpty ||
+              r.branches.isNotEmpty,
+        )
         .toList();
 
     if (config.htmlPackage && records.isNotEmpty) {

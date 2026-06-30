@@ -68,7 +68,9 @@ class BranchAnalyzer {
     // real VM hits — only fill genuine gaps.
     var lines = _withBackfilledLines(record.lines, visitor.inferredLines);
     if (visitor.abstractLines.isNotEmpty) {
-      lines = lines.where((l) => !visitor.abstractLines.contains(l.line)).toList();
+      lines = lines
+          .where((l) => !visitor.abstractLines.contains(l.line))
+          .toList();
     }
 
     return record.copyWith(

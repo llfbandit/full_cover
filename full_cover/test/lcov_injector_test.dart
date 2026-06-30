@@ -89,7 +89,10 @@ void main() {
 
     test('does not re-inject a tracked file that matches a pattern', () async {
       final file = writeLib('generated.g.dart', 'int x = 1;\n');
-      final existing = LcovRecord(sourceFile: abs(file), lines: [LineData(1, 1)]);
+      final existing = LcovRecord(
+        sourceFile: abs(file),
+        lines: [LineData(1, 1)],
+      );
 
       final result = await injector.inject(
         [existing],
@@ -109,22 +112,29 @@ void main() {
       expect(result, hasLength(2));
     });
 
-    test('negation pattern re-includes a file excluded by a prior pattern', () async {
-      // lib/src/ui/ subfolder
-      Directory(p.join(tempDir.path, 'lib', 'src', 'ui')).createSync(recursive: true);
-      final widget = File(p.join(tempDir.path, 'lib', 'src', 'ui', 'widget.dart'))
-        ..writeAsStringSync('int x = 1;\n');
-      final bloc = File(p.join(tempDir.path, 'lib', 'src', 'ui', 'my_bloc.dart'))
-        ..writeAsStringSync('int y = 2;\n');
+    test(
+      'negation pattern re-includes a file excluded by a prior pattern',
+      () async {
+        // lib/src/ui/ subfolder
+        Directory(
+          p.join(tempDir.path, 'lib', 'src', 'ui'),
+        ).createSync(recursive: true);
+        final widget = File(
+          p.join(tempDir.path, 'lib', 'src', 'ui', 'widget.dart'),
+        )..writeAsStringSync('int x = 1;\n');
+        final bloc = File(
+          p.join(tempDir.path, 'lib', 'src', 'ui', 'my_bloc.dart'),
+        )..writeAsStringSync('int y = 2;\n');
 
-      final result = await injector.inject(
-        [],
-        tempDir.path,
-        filePatterns: ['lib/src/ui/**', '!lib/src/ui/**_bloc.dart'],
-      );
-      final paths = result.map((r) => r.sourceFile).toList();
-      expect(paths, contains(abs(bloc)));
-      expect(paths, isNot(contains(abs(widget))));
-    });
+        final result = await injector.inject(
+          [],
+          tempDir.path,
+          filePatterns: ['lib/src/ui/**', '!lib/src/ui/**_bloc.dart'],
+        );
+        final paths = result.map((r) => r.sourceFile).toList();
+        expect(paths, contains(abs(bloc)));
+        expect(paths, isNot(contains(abs(widget))));
+      },
+    );
   });
 }

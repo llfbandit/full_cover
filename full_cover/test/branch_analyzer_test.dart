@@ -374,21 +374,24 @@ abstract class Foo {
     expect(lines, isNot(contains(3)));
   });
 
-  test('fully-abstract file produces an empty record (no lines/functions/branches)', () {
-    final file = writeSource('all_abstract.dart', '''
+  test(
+    'fully-abstract file produces an empty record (no lines/functions/branches)',
+    () {
+      final file = writeSource('all_abstract.dart', '''
 abstract class Repository {
   Future<List<String>> fetchAll();
   Future<void> save(String item);
   int get count;
 }
 ''');
-    // Every member is abstract — after stripping, the record must be empty so
-    // the runner can drop it rather than reporting it as 100% covered.
-    final result = analyzer.analyze(record(file.path, {2: 1, 3: 1, 4: 1}));
-    expect(result.lines, isEmpty);
-    expect(result.functions, isEmpty);
-    expect(result.branches, isEmpty);
-  });
+      // Every member is abstract — after stripping, the record must be empty so
+      // the runner can drop it rather than reporting it as 100% covered.
+      final result = analyzer.analyze(record(file.path, {2: 1, 3: 1, 4: 1}));
+      expect(result.lines, isEmpty);
+      expect(result.functions, isEmpty);
+      expect(result.branches, isEmpty);
+    },
+  );
 
   test('strips abstract getter declaration lines', () {
     final file = writeSource('abstract_getter.dart', '''

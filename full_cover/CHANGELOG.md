@@ -1,3 +1,6 @@
+## 1.4.1
+fix: cross package coverage filtering.
+
 ## 1.4.0
 feat: Add cross package coverage option.
 

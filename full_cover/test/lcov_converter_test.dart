@@ -83,14 +83,20 @@ void main() {
   ({Directory pkgADir, Directory jsonDir}) buildWorkspace(Directory root) {
     final pkgADir = Directory(p.join(root.path, 'pkg_a'))..createSync();
     Directory(p.join(pkgADir.path, 'lib')).createSync();
-    File(p.join(pkgADir.path, 'lib', 'a.dart')).writeAsStringSync('int a = 1;\n');
+    File(
+      p.join(pkgADir.path, 'lib', 'a.dart'),
+    ).writeAsStringSync('int a = 1;\n');
 
     final pkgBDir = Directory(p.join(root.path, 'pkg_b'))..createSync();
     Directory(p.join(pkgBDir.path, 'lib')).createSync();
-    File(p.join(pkgBDir.path, 'lib', 'b.dart')).writeAsStringSync('int b = 2;\n');
+    File(
+      p.join(pkgBDir.path, 'lib', 'b.dart'),
+    ).writeAsStringSync('int b = 2;\n');
 
     Directory(p.join(root.path, '.dart_tool')).createSync();
-    File(p.join(root.path, '.dart_tool', 'package_config.json')).writeAsStringSync(
+    File(
+      p.join(root.path, '.dart_tool', 'package_config.json'),
+    ).writeAsStringSync(
       jsonEncode({
         'configVersion': 2,
         'packages': [
@@ -140,37 +146,47 @@ void main() {
     return (pkgADir: pkgADir, jsonDir: jsonDir);
   }
 
-  test('includes sibling local package hits when crossPackageCoverage is true', () async {
-    final (:pkgADir, :jsonDir) = buildWorkspace(tempDir);
-    final lcovOut = p.join(pkgADir.path, 'coverage', 'lcov.info');
+  test(
+    'includes sibling local package hits when crossPackageCoverage is true',
+    () async {
+      final (:pkgADir, :jsonDir) = buildWorkspace(tempDir);
+      final lcovOut = p.join(pkgADir.path, 'coverage', 'lcov.info');
 
-    await converter.convert(
-      coverageJsonDir: jsonDir.path,
-      lcovOutputPath: lcovOut,
-      reportRoot: pkgADir.path,
-      crossPackageCoverage: true,
-    );
+      await converter.convert(
+        coverageJsonDir: jsonDir.path,
+        lcovOutputPath: lcovOut,
+        reportRoot: pkgADir.path,
+        crossPackageCoverage: true,
+      );
 
-    final out = File(lcovOut).readAsStringSync();
-    expect(out, contains('a.dart'), reason: 'own package hits present');
-    expect(out, contains('b.dart'), reason: 'sibling package hits included');
-  });
+      final out = File(lcovOut).readAsStringSync();
+      expect(out, contains('a.dart'), reason: 'own package hits present');
+      expect(out, contains('b.dart'), reason: 'sibling package hits included');
+    },
+  );
 
-  test('excludes sibling local package hits when crossPackageCoverage is false', () async {
-    final (:pkgADir, :jsonDir) = buildWorkspace(tempDir);
-    final lcovOut = p.join(pkgADir.path, 'coverage', 'lcov.info');
+  test(
+    'excludes sibling local package hits when crossPackageCoverage is false',
+    () async {
+      final (:pkgADir, :jsonDir) = buildWorkspace(tempDir);
+      final lcovOut = p.join(pkgADir.path, 'coverage', 'lcov.info');
 
-    await converter.convert(
-      coverageJsonDir: jsonDir.path,
-      lcovOutputPath: lcovOut,
-      reportRoot: pkgADir.path,
-      crossPackageCoverage: false,
-    );
+      await converter.convert(
+        coverageJsonDir: jsonDir.path,
+        lcovOutputPath: lcovOut,
+        reportRoot: pkgADir.path,
+        crossPackageCoverage: false,
+      );
 
-    final out = File(lcovOut).readAsStringSync();
-    expect(out, contains('a.dart'), reason: 'own package hits present');
-    expect(out, isNot(contains('b.dart')), reason: 'sibling package hits excluded');
-  });
+      final out = File(lcovOut).readAsStringSync();
+      expect(out, contains('a.dart'), reason: 'own package hits present');
+      expect(
+        out,
+        isNot(contains('b.dart')),
+        reason: 'sibling package hits excluded',
+      );
+    },
+  );
 
   test('converts VM coverage json to lcov', () async {
     // A real lib file resolvable via a minimal package_config.
