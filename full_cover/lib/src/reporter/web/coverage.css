@@ -24,9 +24,12 @@ a:hover {
   text-decoration: underline;
 }
 
-.back-link {
-  display: inline-block;
+.nav-links {
+  display: flex;
+  gap: 12px;
   margin-bottom: 8px;
+}
+.back-link {
   font-size: 12px;
   color: #666;
 }

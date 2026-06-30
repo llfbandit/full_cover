@@ -46,9 +46,19 @@ class FilePageBuilder {
         ? 100.0
         : record.functionsHit / record.functionsFound * 100;
 
+    final parts = split.shortPath.split('/');
+    final backHref = parts.length > 1
+        ? './${_ctx.folderPageName(split.package, parts.sublist(0, parts.length - 1).join('/'))}'
+        : '../index.html';
+
     final body = StringBuffer();
     body.writeln('<div class="header">');
-    body.writeln('<a class="back-link" href="../index.html">← index</a>');
+    body.writeln(
+      '<div class="nav-links">'
+      '<a class="back-link" href="${_ctx.escape(backHref)}">← back</a>'
+      '<a class="back-link" href="../index.html">index</a>'
+      '</div>',
+    );
     body.writeln('<h1>${_ctx.escape(title)}</h1>');
     body.writeln('<h2>${_ctx.escape(headerPath)}</h2>');
     body.writeln('<div class="totals">');

@@ -92,7 +92,10 @@ class FolderPageBuilder {
     final body = StringBuffer();
     body.writeln('<div class="header">');
     body.writeln(
-      '<a class="back-link" href="${_ctx.escape(backHref)}">← back</a>',
+      '<div class="nav-links">'
+      '<a class="back-link" href="${_ctx.escape(backHref)}">← back</a>'
+      '<a class="back-link" href="../index.html">index</a>'
+      '</div>',
     );
     body.writeln('<h1>${_ctx.escape(title)}</h1>');
     body.writeln('<h2>${_ctx.escape(headerPath)}</h2>');
