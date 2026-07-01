@@ -104,6 +104,26 @@ void main() {
       );
       expect(result, hasLength(1));
     });
+
+    test('a leading **/ pattern naming the package\'s own directory matches '
+        'across an absolute Windows-style drive-letter root', () {
+      // package:glob's default (platform) context can't match a leading
+      // `**` across a Windows drive-letter root — only the absolute path
+      // route can see this pattern at all, since the package-relative path
+      // never contains the package's own directory name.
+      final pkgPath = p.join('D:', 'dev', 'packages', 'ui_rich_text_editor');
+      final included = p.join(pkgPath, 'lib', 'serialization', 'foo.dart');
+      final excluded = p.join(pkgPath, 'lib', 'other.dart');
+
+      final result = filter.apply(
+        records: [_rec(excluded), _rec(included)],
+        filePatterns: ['**', '!**/ui_rich_text_editor/**serialization/**'],
+        packagePath: pkgPath,
+      );
+
+      expect(result.map((r) => r.sourceFile), contains(included));
+      expect(result.map((r) => r.sourceFile), isNot(contains(excluded)));
+    });
   });
 
   group('filterSiblingExcludes', () {
@@ -238,6 +258,26 @@ void main() {
         expect(files, isNot(contains(p.join(pkgB, 'lib', 'gen', 'b.g.dart'))));
       },
     );
+
+    // Regression: mirror of the above — when the CURRENT package is the
+    // nested one, the workspace root (a path-prefix of every package) must
+    // not win ownership by elimination just because the current package's
+    // own entry is excluded from the sibling field. Previously the root's
+    // own (broader, global-inclusive) patterns got wrongly applied to the
+    // current package's own files, dropping records with real coverage.
+    test('keeps current package\'s own file even when the workspace root is '
+        'also a path-prefix match and would otherwise exclude it', () {
+      final result = LcovFilter.filterSiblingExcludes(
+        records: [_rec(p.join(pkgA, 'lib', 'real.dart'))],
+        currentPkgPath: pkgA,
+        siblingPatterns: patterns(
+          [(path: base.path, excludes: []), (path: pkgA, excludes: [])],
+          globalExcludes: ['**/pkg_a/**'],
+        ),
+      );
+      expect(result, hasLength(1));
+      expect(result.first.sourceFile, p.join(pkgA, 'lib', 'real.dart'));
+    });
 
     test('prepareSiblingPatterns output is reusable across multiple '
         'filterSiblingExcludes calls with different currentPkgPath', () {

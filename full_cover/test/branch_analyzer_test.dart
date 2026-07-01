@@ -545,4 +545,56 @@ void registerFactory() {}
     expect(byLine[6], 8);
     expect(byLine[8], 14);
   });
+
+  test('strips try/finally and untyped catch headers, keeping typed on-clauses '
+      'even when spuriously zero-tagged by cross-package injection/merge', () {
+    final file = writeSource('trycatch.dart', '''
+String parse(String input) {
+  try {
+    if (input.isEmpty) {
+      throw ArgumentError('empty');
+    }
+    return input.toUpperCase();
+  } on ArgumentError {
+    return 'bad';
+  } catch (e) {
+    return 'other';
+  } finally {
+    log();
+  }
+}
+
+void log() {}
+''');
+    // The VM never emits a real position for a bare `try {`, an untyped
+    // `catch (e) {`, or `finally {` — unlike a typed `on X {` clause, which
+    // does get a real (possibly zero) entry reporting whether that arm was
+    // taken. A package with zero native coverage of this file still gets it
+    // fully zero-injected though, dangling these fake positions until merged
+    // with real cross-package hits.
+    final result = analyzer.analyze(
+      record(file.path, {
+        1: 0, // String parse(String input) {
+        2: 0, //   try {
+        3: 6, //     if (input.isEmpty) {
+        4: 0, //       throw ArgumentError('empty');
+        6: 6, //     return input.toUpperCase();
+        7: 0, //   } on ArgumentError {
+        8: 0, //     return 'bad';
+        9: 0, //   } catch (e) {
+        10: 0, //     return 'other';
+        11: 0, //   } finally {
+        12: 6, //     log();
+      }),
+    );
+
+    final byLine = {for (final l in result.lines) l.line: l.hits};
+    expect(byLine.containsKey(2), isFalse, reason: 'try header line');
+    expect(byLine.containsKey(9), isFalse, reason: 'untyped catch header line');
+    expect(byLine.containsKey(11), isFalse, reason: 'finally header line');
+    expect(byLine[7], 0, reason: 'typed on-clause is real branch data');
+    expect(byLine[3], 6);
+    expect(byLine[6], 6);
+    expect(byLine[12], 6);
+  });
 }

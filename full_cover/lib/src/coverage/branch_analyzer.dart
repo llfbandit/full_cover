@@ -56,6 +56,7 @@ class BranchAnalyzer {
       ...visitor.abstractLines,
       ...visitor.misattributedLines,
       ...visitor.typeHeaderLines,
+      ...visitor.tryHeaderLines,
     };
     if (linesToStrip.isNotEmpty) {
       lines = lines.where((l) => !linesToStrip.contains(l.line)).toList();
@@ -130,6 +131,12 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   /// A type declaration's own header (signature through the opening `{`)
   /// and closing `}` lines — never themselves an executable position.
   final Set<int> typeHeaderLines = {};
+
+  /// `try {`, untyped `catch (e) {`, and `finally {` header lines — the VM
+  /// never emits a real position for these (unlike a typed `on X {` clause,
+  /// which does get one to report whether that arm was entered), so any hit
+  /// here is a synthetic zero-fill artifact from cross-package coverage.
+  final Set<int> tryHeaderLines = {};
 
   int _blockId = 0;
 
@@ -483,6 +490,29 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   void visitExtensionDeclaration(ExtensionDeclaration node) {
     _collectTypeHeaderLines(node, node.body);
     super.visitExtensionDeclaration(node);
+  }
+
+  // -------------------------------------------------------- try / catch
+
+  @override
+  void visitTryStatement(TryStatement node) {
+    tryHeaderLines.add(_lineOf(node.tryKeyword.offset));
+    final finallyKeyword = node.finallyKeyword;
+    if (finallyKeyword != null) {
+      tryHeaderLines.add(_lineOf(finallyKeyword.offset));
+    }
+    super.visitTryStatement(node);
+  }
+
+  @override
+  void visitCatchClause(CatchClause node) {
+    // Only the untyped form (`catch (e) {`, no `on` clause) is stripped —
+    // a typed `on X {` header is a real VM-tracked branch entry point.
+    if (node.exceptionType == null) {
+      final keyword = node.catchKeyword;
+      if (keyword != null) tryHeaderLines.add(_lineOf(keyword.offset));
+    }
+    super.visitCatchClause(node);
   }
 
   // -------------------------------------------------------- switch

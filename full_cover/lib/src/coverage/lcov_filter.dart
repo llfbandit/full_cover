@@ -71,7 +71,14 @@ class LcovFilter {
     return [
       for (final raw in filePatterns)
         (
-          glob: Glob(raw.startsWith('!') ? raw.substring(1) : raw),
+          // A posix context is required regardless of platform: package:glob's
+          // default (platform) context can't match a leading `**` across a
+          // Windows drive-letter root (e.g. `**/foo/**` never matches
+          // `D:\a\foo\b.dart`, only `a\foo\b.dart`) — see [_matchesPath].
+          glob: Glob(
+            raw.startsWith('!') ? raw.substring(1) : raw,
+            context: p.posix,
+          ),
           negate: raw.startsWith('!'),
         ),
     ];
@@ -105,30 +112,35 @@ class LcovFilter {
   }) {
     final absCurrent = p.normalize(p.absolute(currentPkgPath));
 
-    // `path + separator` avoids false prefix matches, e.g. `pkg` vs `pkg_b/`.
-    final normalizedSiblings = siblingPatterns
-        .where((s) => s.path != absCurrent)
-        .toList();
-
     return records.where((r) {
       final absFile = p.normalize(
         p.isAbsolute(r.sourceFile) ? r.sourceFile : p.absolute(r.sourceFile),
       );
 
-      // Most specific (longest-path) sibling that owns this file.
+      // Most specific (longest-path) owner among every sibling AND the
+      // current package itself — the current package must stay in this
+      // competition, or a shorter ancestor (e.g. the workspace root, which
+      // is a path-prefix of every nested package) wins by elimination and
+      // wrongly claims the current package's own files.
+      final ownsSelf =
+          absFile == absCurrent || absFile.startsWith(absCurrent + p.separator);
       SiblingPattern? owner;
-      for (final sibling in normalizedSiblings) {
+      var ownerPathLength = ownsSelf ? absCurrent.length : -1;
+      for (final sibling in siblingPatterns) {
+        // current handled via ownsSelf
+        if (sibling.path == absCurrent) {
+          continue;
+        }
         if (!absFile.startsWith(sibling.path + p.separator)) continue;
-        if (owner == null || sibling.path.length > owner.path.length) {
+        if (sibling.path.length > ownerPathLength) {
           owner = sibling;
+          ownerPathLength = sibling.path.length;
         }
       }
 
-      // Unowned: keep only if it's the current package's own file.
-      if (owner == null) {
-        return absFile == absCurrent ||
-            absFile.startsWith(absCurrent + p.separator);
-      }
+      // The current package is the most specific match (or the only match):
+      // pass through unchanged — the caller's own [apply] step handles it.
+      if (owner == null) return ownsSelf;
 
       if (owner.patterns.isEmpty) return true;
       return !isExcluded(absFile, owner.patterns, owner.path);
@@ -136,8 +148,12 @@ class LcovFilter {
   }
 
   static bool _matchesPath(Glob glob, String filePath, String? relativePath) {
-    if (glob.matches(filePath)) return true;
-    if (relativePath != null && glob.matches(relativePath)) return true;
+    if (glob.matches(_toPosix(filePath))) return true;
+    if (relativePath != null && glob.matches(_toPosix(relativePath))) {
+      return true;
+    }
     return false;
   }
+
+  static String _toPosix(String path) => path.replaceAll(r'\', '/');
 }
