@@ -1,3 +1,8 @@
+## 1.5.0
+feat: Improved performance & package concurrency option added.
+fix: cross package coverage filtering.
+fix: coverage filtering.
+
 ## 1.4.1
 fix: cross package coverage filtering.
 
