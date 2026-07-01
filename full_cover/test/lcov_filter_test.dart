@@ -181,18 +181,58 @@ void main() {
       expect(files, isNot(contains(p.join(pkgB, 'lib', 'b.g.dart'))));
     });
 
-    test('keeps records from unknown packages (not in siblings list)', () {
-      final pkgC = p.join(base.path, 'pkg_c');
-      final records = [_rec(p.join(pkgC, 'lib', 'c.dart'))];
-      final result = LcovFilter.filterSiblingExcludes(
-        records: records,
-        currentPkgPath: pkgA,
-        siblings: [
-          (path: pkgB, excludes: ['**']),
-        ],
-        globalExcludes: [],
-      );
-      expect(result, hasLength(1));
-    });
+    test(
+      'drops records from packages outside the workspace (not in siblings list)',
+      () {
+        // Simulates a pub-cache dependency swept in by --coverage-package=.*:
+        // it's neither the current package nor a discovered workspace sibling.
+        final pkgC = p.join(base.path, 'pkg_c');
+        final records = [
+          _rec(p.join(pkgA, 'lib', 'a.dart')),
+          _rec(p.join(pkgC, 'lib', 'c.dart')),
+        ];
+        final result = LcovFilter.filterSiblingExcludes(
+          records: records,
+          currentPkgPath: pkgA,
+          siblings: [
+            (path: pkgB, excludes: ['**']),
+          ],
+          globalExcludes: [],
+        );
+        final files = result.map((r) => r.sourceFile).toList();
+        expect(files, [p.join(pkgA, 'lib', 'a.dart')]);
+      },
+    );
+
+    // Regression: when the workspace root is the current package, sub-package
+    // paths share a common prefix with it. A naive startsWith check would
+    // mis-classify sibling files as own-package files and skip filtering them.
+    test(
+      'filters sibling when current package is a parent directory (workspace root)',
+      () {
+        // base = workspace root (current package), pkgB is a sub-package of it.
+        final records = [
+          _rec(p.join(base.path, 'lib', 'root.dart')), // root's own file
+          _rec(p.join(pkgB, 'lib', 'gen', 'b.g.dart')), // sibling, excluded
+          _rec(p.join(pkgB, 'lib', 'real.dart')), // sibling, kept
+        ];
+        final result = LcovFilter.filterSiblingExcludes(
+          records: records,
+          currentPkgPath: base.path,
+          siblings: [
+            (
+              path: base.path,
+              excludes: [],
+            ), // current pkg in list (as runner passes it)
+            (path: pkgB, excludes: ['lib/gen/**']),
+          ],
+          globalExcludes: [],
+        );
+        final files = result.map((r) => r.sourceFile).toList();
+        expect(files, contains(p.join(base.path, 'lib', 'root.dart')));
+        expect(files, contains(p.join(pkgB, 'lib', 'real.dart')));
+        expect(files, isNot(contains(p.join(pkgB, 'lib', 'gen', 'b.g.dart'))));
+      },
+    );
   });
 }

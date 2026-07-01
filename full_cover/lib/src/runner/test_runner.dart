@@ -57,6 +57,7 @@ class TestRunner {
       '--coverage',
       '--branch-coverage',
       if (concurrency != null) '--concurrency=$concurrency',
+      if (crossPackageCoverage) '--coverage-package=.*',
     ], pkgPath);
   }
 
@@ -74,6 +75,7 @@ class TestRunner {
       '--coverage=$tempCoverageDir',
       '--branch-coverage',
       if (concurrency != null) '--concurrency=$concurrency',
+      if (crossPackageCoverage) '--coverage-package=.*',
     ], pkgPath);
 
     // Step 2: convert raw coverage JSON to LCOV

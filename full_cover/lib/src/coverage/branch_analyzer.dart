@@ -73,6 +73,18 @@ class BranchAnalyzer {
           .toList();
     }
 
+    // Strip blank lines — the VM never emits coverage for them, so any
+    // injected zero-hit entries for blank lines are noise.
+    final sourceLines = source.split('\n');
+    lines = lines
+        .where(
+          (l) =>
+              l.line < 1 ||
+              l.line > sourceLines.length ||
+              sourceLines[l.line - 1].trim().isNotEmpty,
+        )
+        .toList();
+
     return record.copyWith(
       lines: lines,
       branches: visitor.branches,
@@ -383,6 +395,44 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       );
     }
     super.visitConstructorDeclaration(node);
+  }
+
+  // ------------------------------------------------- compilation unit / directives
+
+  @override
+  void visitCompilationUnit(CompilationUnit node) {
+    // Directives (import, export, library, part, part of) are not executable.
+    for (final directive in node.directives) {
+      _collectAbstractLines(directive);
+    }
+    super.visitCompilationUnit(node);
+  }
+
+  // ------------------------------------------------------ class declarations
+
+  @override
+  void visitClassDeclaration(ClassDeclaration node) {
+    super.visitClassDeclaration(node); // visit members first
+
+    // Only strip the full class span for `abstract interface class` declarations.
+    // A plain `abstract class` can mix abstract and concrete members and should
+    // remain in coverage. Concrete classes may also have empty const constructors
+    // (EmptyFunctionBody) that are executable — their spans must not be stripped.
+    if (node.abstractKeyword == null || node.interfaceKeyword == null) return;
+
+    // If an abstract class has no concrete members (all methods abstract, no
+    // fields with initializers), mark its entire span so injected zero-coverage
+    // entries are stripped and the record is dropped when otherwise empty.
+    final hasConcreteMembers = node.body.members.any((m) {
+      if (m is MethodDeclaration) return m.body is! EmptyFunctionBody;
+      if (m is ConstructorDeclaration) {
+        return m.body is! EmptyFunctionBody && m.redirectedConstructor == null;
+      }
+      if (m is FieldDeclaration) return true;
+      return false;
+    });
+
+    if (!hasConcreteMembers) _collectAbstractLines(node);
   }
 
   // -------------------------------------------------------- switch

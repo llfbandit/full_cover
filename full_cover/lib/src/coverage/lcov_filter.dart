@@ -53,12 +53,17 @@ class LcovFilter {
     ];
   }
 
-  /// Removes records that belong to a sibling local package and are excluded
-  /// by that package's own [excludes] or the shared [globalExcludes].
+  /// Removes records that don't belong to the current project/workspace, and
+  /// records that belong to a sibling local package but are excluded by that
+  /// package's own [excludes] or the shared [globalExcludes].
+  ///
+  /// [siblings] is the full set of packages discovered in the workspace, so
+  /// a record that belongs to neither [currentPkgPath] nor a known sibling
+  /// is coverage for a package outside the current project (e.g. a pub-cache
+  /// dependency swept in by `--coverage-package=.*`) and is dropped.
   ///
   /// Records that belong to [currentPkgPath] are passed through unchanged —
   /// they are handled by the caller's regular [apply] step.
-  /// Records that don't belong to any known sibling are also kept.
   static List<LcovRecord> filterSiblingExcludes({
     required List<LcovRecord> records,
     required String currentPkgPath,
@@ -66,21 +71,48 @@ class LcovFilter {
     required List<String> globalExcludes,
   }) {
     final absCurrent = p.normalize(p.absolute(currentPkgPath));
+
+    // Exclude the current package from the sibling list and pre-normalise paths.
+    // Using `path + separator` avoids false prefix matches between packages
+    // whose names share a common prefix (e.g. `pkg` matching `pkg_b/…`), and
+    // also prevents the workspace-root package from treating sub-package files
+    // as its own.
+    final normalizedSiblings = [
+      for (final s in siblings)
+        (path: p.normalize(p.absolute(s.path)), excludes: s.excludes),
+    ].where((s) => s.path != absCurrent).toList();
+
+    // Pre-compute Glob objects per sibling so they are compiled once, not once
+    // per record. Glob construction compiles a regex internally.
+    final siblingPatterns = {
+      for (final s in normalizedSiblings)
+        s.path: _parsePatterns([...globalExcludes, ...s.excludes]),
+    };
+
     return records.where((r) {
       final absFile = p.normalize(
         p.isAbsolute(r.sourceFile) ? r.sourceFile : p.absolute(r.sourceFile),
       );
-      if (absFile.startsWith(absCurrent)) return true;
-      for (final sibling in siblings) {
-        final absSibling = p.normalize(p.absolute(sibling.path));
-        if (absFile.startsWith(absSibling)) {
-          final patterns = [...globalExcludes, ...sibling.excludes];
-          if (patterns.isEmpty) return true;
-          final parsed = _parsePatterns(patterns);
-          return !isExcluded(absFile, parsed, absSibling);
+
+      // Find the most specific (longest-path) sibling that owns this file.
+      ({String path, List<String> excludes})? owner;
+      for (final sibling in normalizedSiblings) {
+        if (!absFile.startsWith(sibling.path + p.separator)) continue;
+        if (owner == null || sibling.path.length > owner.path.length) {
+          owner = sibling;
         }
       }
-      return true;
+
+      // No sibling owns it: keep only if it's the current package's own
+      // file. Anything else belongs to a package outside the workspace.
+      if (owner == null) {
+        return absFile == absCurrent ||
+            absFile.startsWith(absCurrent + p.separator);
+      }
+
+      final patterns = siblingPatterns[owner.path]!;
+      if (patterns.isEmpty) return true;
+      return !isExcluded(absFile, patterns, owner.path);
     }).toList();
   }
 

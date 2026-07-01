@@ -378,7 +378,7 @@ abstract class Foo {
     'fully-abstract file produces an empty record (no lines/functions/branches)',
     () {
       final file = writeSource('all_abstract.dart', '''
-abstract class Repository {
+abstract interface class Repository {
   Future<List<String>> fetchAll();
   Future<void> save(String item);
   int get count;
@@ -404,6 +404,58 @@ abstract class Foo {
     final lines = {for (final l in result.lines) l.line};
     expect(lines, isNot(contains(2)));
     expect(lines, isNot(contains(3)));
+  });
+
+  test('strips blank lines between imports and class', () {
+    final file = writeSource('blank_gap.dart', '''
+import 'dart:async';
+
+abstract interface class Repo {
+  Future<void> save();
+}
+''');
+    // Line 2 is blank — not covered by any directive or class node span.
+    // It must still be dropped so the fully-abstract record is empty.
+    final result = analyzer.analyze(
+      record(file.path, {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}),
+    );
+    expect(result.lines, isEmpty);
+    expect(result.functions, isEmpty);
+    expect(result.branches, isEmpty);
+  });
+
+  test('strips import/export/library directive lines', () {
+    final file = writeSource('directives.dart', '''
+library my_lib;
+import 'dart:async';
+export 'dart:core';
+
+abstract interface class Repo {
+  Future<void> save();
+}
+''');
+    // Directive lines (1-3) are not executable; they must be stripped so a
+    // fully-abstract file (no concrete members) produces an empty record.
+    final result = analyzer.analyze(
+      record(file.path, {1: 0, 2: 0, 3: 0, 5: 0, 6: 0, 7: 0}),
+    );
+    expect(result.lines, isEmpty);
+    expect(result.functions, isEmpty);
+    expect(result.branches, isEmpty);
+  });
+
+  test('keeps coverage for concrete class with empty const constructor', () {
+    final file = writeSource('concrete_const_ctor.dart', '''
+class MyException implements Exception {
+  const MyException();
+}
+''');
+    // Non-abstract class with a const empty constructor — NOT fully abstract.
+    // All lines must be preserved; none should be stripped.
+    final result = analyzer.analyze(record(file.path, {1: 1, 2: 1}));
+    final lines = {for (final l in result.lines) l.line};
+    expect(lines, contains(1));
+    expect(lines, contains(2));
   });
 
   test('does not override existing VM line hits when backfilling', () {

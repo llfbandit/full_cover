@@ -31,19 +31,21 @@ class FullCoverRunner {
   }) : logger = logger ?? Logger(level: level);
 
   Future<void> run(FullCoverConfig config) async {
-    final packages = _discoverPackages(
+    // Includes packages excluded entirely (excludes == ['**']) — they must
+    // still be known as siblings so cross-package hits landing in them can
+    // be attributed and dropped, rather than being mistaken for the current
+    // package's own files just because they're nested under it on disk.
+    final allPackages = _discoverPackages(
       config.workspaceRoot,
       config.packageExcludes,
     );
+    final packages = allPackages.where((pkg) => !_isSkipped(pkg)).toList();
     logger.info(ansi.bold('Discovered ${packages.length} package(s).'));
 
-    // Packages are independent, so process them concurrently. The bound keeps
-    // us from spawning more test processes than the machine can usefully run
-    // (each package's `dart test` already honours its own --concurrency).
     final results = await _mapBounded(
       packages,
-      Platform.numberOfProcessors,
-      (pkg) => _processPackage(pkg, config, packages),
+      1,
+      (pkg) => _processPackage(pkg, config, allPackages),
     );
     final allPackageRecords = [for (final records in results) ?records];
 
@@ -83,9 +85,9 @@ class FullCoverRunner {
   /// Runs the full pipeline for [pkg], returning its filtered records or null
   /// when there was nothing to process.
   ///
-  /// Verbose detail is captured into a per-package buffer so concurrent packages
-  /// don't interleave. When verbose, that buffer is flushed as a single labeled
-  /// block; otherwise a one-line summary is emitted as the package finishes.
+  /// Verbose detail is captured into a per-package buffer. When verbose, that
+  /// buffer is flushed as a single labeled block; otherwise a one-line summary
+  /// is emitted as the package finishes.
   Future<List<LcovRecord>?> _processPackage(
     PackageConfig pkg,
     FullCoverConfig config,
@@ -106,7 +108,7 @@ class FullCoverRunner {
       if (logger.isVerbose) {
         _flushBlock(name, buffer);
       } else {
-        _logSummary(name, records);
+        _logSummary(name, config, records);
       }
       return records;
     } catch (_) {
@@ -125,19 +127,31 @@ class FullCoverRunner {
   }
 
   /// Emits a one-line normal-mode summary for a finished package.
-  void _logSummary(String name, List<LcovRecord>? records) {
+  void _logSummary(
+    String name,
+    FullCoverConfig config,
+    List<LcovRecord>? records,
+  ) {
     if (records == null) {
       logger.warn('  ${ansi.yellow('⚠')} $name — no coverage data, skipping');
       return;
     }
-    var found = 0;
-    var hit = 0;
-    for (final r in records) {
-      found += r.linesFound;
-      hit += r.linesHit;
+
+    if (config.crossPackageCoverage) {
+      logger.info('  ${ansi.green('✓')} ${name.padRight(24)}');
+    } else {
+      var found = 0;
+      var hit = 0;
+      for (final r in records) {
+        found += r.linesFound;
+        hit += r.linesHit;
+      }
+      final pct = found == 0
+          ? '—'
+          : '${(100 * hit / found).toStringAsFixed(1)}%';
+
+      logger.info('  ${ansi.green('✓')} ${name.padRight(24)} $pct');
     }
-    final pct = found == 0 ? '—' : '${(100 * hit / found).toStringAsFixed(1)}%';
-    logger.info('  ${ansi.green('✓')} ${name.padRight(24)} $pct');
   }
 
   Future<List<LcovRecord>?> _runPipeline(
@@ -157,8 +171,9 @@ class FullCoverRunner {
       if (!lcovFile.existsSync()) {
         log.detail(ansi.yellow('  No coverage data at ${lcovFile.path}.'));
         records = [];
+      } else {
+        records = parser.parse(lcovFile.readAsStringSync());
       }
-      records = parser.parse(lcovFile.readAsStringSync());
     } else {
       final testDir = Directory(p.join(pkgPath, 'test'));
       if (!testDir.existsSync()) {
@@ -275,7 +290,7 @@ class FullCoverRunner {
     final packages = _discoverPackages(
       config.workspaceRoot,
       config.packageExcludes,
-    );
+    ).where((pkg) => !_isSkipped(pkg));
     for (final pkg in packages) {
       final pkgCoverageDir = p.join(
         p.normalize(p.absolute(pkg.path)),
@@ -293,12 +308,24 @@ class FullCoverRunner {
     }
   }
 
+  /// A package whose resolved excludes are exactly `['**']` — i.e. the user
+  /// excluded it entirely, with no negations. Its own tests are never run,
+  /// but it's still returned by [_discoverPackages] so cross-package hits
+  /// landing in it can be attributed to it (and dropped) instead of being
+  /// mistaken for the current package's own files.
+  bool _isSkipped(PackageConfig pkg) =>
+      pkg.excludes.length == 1 && pkg.excludes.first == '**';
+
   /// Reads the workspace [pubspec.yaml] and returns one [PackageConfig] per
   /// discovered package, with file exclusions resolved from [excludeConfigs].
   ///
   /// The root package (`.`) is always included. Sub-packages come from the
   /// `workspace:` list if present, otherwise from `path:` entries in
   /// `dependencies`, `dev_dependencies`, and `dependency_overrides`.
+  ///
+  /// Packages excluded entirely (`excludes == ['**']`) are still included in
+  /// the result — see [_isSkipped] — callers that only want testable
+  /// packages must filter them out themselves.
   List<PackageConfig> _discoverPackages(
     String workspaceRoot,
     List<PackageExcludeConfig> excludeConfigs,
@@ -349,10 +376,6 @@ class FullCoverRunner {
           excludes.addAll(ec.excludes);
         }
       }
-
-      // excludes == ['**'] with no negations means "skip entirely" — avoids
-      // running tests on packages the user has excluded without exceptions.
-      if (excludes.length == 1 && excludes.first == '**') continue;
 
       result.add(PackageConfig(path: pkgPath, excludes: excludes));
     }

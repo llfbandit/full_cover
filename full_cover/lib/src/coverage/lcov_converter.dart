@@ -1,8 +1,9 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:coverage/coverage.dart';
 import 'package:path/path.dart' as p;
+
+import 'local_packages.dart';
 
 /// Converts raw VM coverage JSON (as produced by `dart test --coverage`) into
 /// LCOV format using the `package:coverage` API.
@@ -15,6 +16,12 @@ class LcovConverter {
   /// [reportRoot] is the package directory whose `lib/` is reported on; it is
   /// also the starting point for locating `package_config.json`. When no JSON
   /// coverage is found an empty LCOV file is written.
+  ///
+  /// Packages outside the current project/workspace (e.g. pub-cache
+  /// dependencies swept in by `--coverage-package=.*`) are not filtered here
+  /// — that happens after parsing, in [LcovFilter.filterSiblingExcludes],
+  /// so it applies uniformly to both `dart test` (JSON, converted here) and
+  /// `flutter test` (which writes `lcov.info` directly, bypassing this class).
   Future<void> convert({
     required String coverageJsonDir,
     required String lcovOutputPath,
@@ -31,11 +38,11 @@ class LcovConverter {
     }
 
     final hitmap = await HitMap.parseFiles(jsonFiles);
+    final configPath = findPackageConfigPath(reportRoot);
     final resolver = await Resolver.create(
-      packagesPath: _packageConfigPath(reportRoot),
+      packagesPath: configPath,
       sdkRoot: _sdkRoot(),
     );
-    final configPath = _packageConfigPath(reportRoot);
     final reportOn = [
       p.join(reportRoot, 'lib'),
       if (crossPackageCoverage) ..._localLibDirs(configPath, reportRoot),
@@ -44,37 +51,15 @@ class LcovConverter {
     File(lcovOutputPath).writeAsStringSync(lcovContent);
   }
 
-  /// Returns the `lib/` directories of local (non-pub-cache) packages listed
-  /// in [configPath], excluding [reportRoot] itself (already in `reportOn`).
-  ///
-  /// In a Dart workspace `package_config.json`, local packages use a relative
-  /// `rootUri` (e.g. `"../other_pkg/"`). Pub-cache entries use an absolute
-  /// `file:///…` URI — those are skipped.
+  /// Returns the `lib/` directories of local packages listed in [configPath],
+  /// excluding [reportRoot] itself (already in `reportOn`).
   List<String> _localLibDirs(String configPath, String reportRoot) {
-    final file = File(configPath);
-    if (!file.existsSync()) return [];
-    try {
-      final json = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
-      final packages =
-          (json['packages'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      final configDir = p.dirname(configPath); // the .dart_tool/ directory
-      final absReportRoot = p.normalize(p.absolute(reportRoot));
-      final result = <String>[];
-      for (final pkg in packages) {
-        final rootUri = pkg['rootUri'] as String?;
-        if (rootUri == null) continue;
-        // Absolute URIs (file://, drive letters, /…) → pub cache or SDK; skip.
-        if (Uri.parse(rootUri).isAbsolute) continue;
-        final rootPath = p.normalize(p.join(configDir, rootUri));
-        if (p.normalize(p.absolute(rootPath)) == absReportRoot) continue;
-        final packageUri = pkg['packageUri'] as String? ?? 'lib/';
-        final libPath = p.normalize(p.join(rootPath, packageUri));
-        if (Directory(libPath).existsSync()) result.add(libPath);
-      }
-      return result;
-    } catch (_) {
-      return [];
-    }
+    final absReportRoot = p.normalize(p.absolute(reportRoot));
+    return localWorkspacePackages(configPath)
+        .where((pkg) => pkg.rootPath != absReportRoot)
+        .map((pkg) => pkg.libPath)
+        .where((libPath) => Directory(libPath).existsSync())
+        .toList();
   }
 
   List<File> _jsonFiles(Directory dir) {
@@ -87,23 +72,6 @@ class LcovConverter {
     } catch (_) {
       return <File>[];
     }
-  }
-
-  /// Returns the package_config.json path for [pkgPath].
-  ///
-  /// In a pub workspace the file lives at the workspace root, not inside each
-  /// sub-package. Walk up the directory tree until we find one.
-  String _packageConfigPath(String pkgPath) {
-    var dir = Directory(pkgPath);
-    while (true) {
-      final candidate = p.join(dir.path, '.dart_tool', 'package_config.json');
-      if (File(candidate).existsSync()) return candidate;
-      final parent = dir.parent;
-      if (parent.path == dir.path) break; // filesystem root
-      dir = parent;
-    }
-    // Fall back to expected location so the original error message is preserved.
-    return p.join(pkgPath, '.dart_tool', 'package_config.json');
   }
 
   String? _sdkRoot() {
