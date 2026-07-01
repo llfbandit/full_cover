@@ -23,7 +23,7 @@ dependencies:
   args: ^2.6.0
   glob: ^2.1.2
   coverage: ^1.11.1
-  analyzer: '>=10.0.0 <15.0.0'
+  analyzer: '>=12.0.0 <15.0.0'
 
 dev_dependencies:
   lints: ^6.0.0
