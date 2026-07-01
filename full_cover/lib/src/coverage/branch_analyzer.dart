@@ -7,16 +7,8 @@ import 'package:analyzer/source/line_info.dart';
 
 import 'lcov_record.dart';
 
-/// Replaces the branch data in [record] with condition-level branch data
-/// derived by parsing the source file's AST and correlating with line hits.
-///
-/// The Dart VM's branch coverage is line-level only. This analyzer walks
-/// the AST to find every decision point (if/else, ternary, switch) and infers
-/// which branches were taken from the line-hit counts.
-///
-/// If analysis produces no branches (e.g. the file has no decision points the
-/// analyzer can handle), the original VM-level branch data is preserved rather
-/// than replaced with an empty list.
+/// Replaces [record]'s branch data with condition-level data inferred from
+/// the AST and line hits — the VM's own branch coverage is line-level only.
 class BranchAnalyzer {
   LcovRecord analyze(LcovRecord record) {
     final file = File(record.sourceFile);
@@ -31,11 +23,9 @@ class BranchAnalyzer {
 
     final lineHits = <int, int>{for (final l in record.lines) l.line: l.hits};
 
-    // The VM's own branch data (BRDA, from `--branch-coverage`) keyed by the
-    // source line of each branch's entry token. The AST decides *which* branches
-    // exist; this tells us whether each arm was taken — accurately even when the
-    // arm body is a `return <literal>;` the VM omits from line data. We key by
-    // line and keep the max so any covered path wins.
+    // VM branch data (BRDA) keyed by entry line, max hits kept per line — the
+    // AST decides which branches exist; this tells us if an arm was taken,
+    // accurately even when its body is a `return <literal>;` the VM drops.
     final vmBranchHits = <int, int>{};
     for (final b in record.branches) {
       final hits = b.hits ?? 0;
@@ -47,9 +37,8 @@ class BranchAnalyzer {
     }
     final hasVmBranches = record.branches.isNotEmpty;
 
-    // The AST is the structural source of truth. We do not adopt the VM's
-    // branch *list* directly (it includes spurious function-entry entries), but
-    // we do consult its hit counts per arm via [vmBranchHits].
+    // The AST decides which branches exist; the VM's own list isn't used
+    // directly (it includes spurious function-entry entries).
     final parseResult = parseString(content: source, throwIfDiagnostics: false);
     final visitor = _BranchVisitor(
       lineHits,
@@ -59,29 +48,29 @@ class BranchAnalyzer {
     );
     parseResult.unit.accept(visitor);
 
-    // Backfill statement lines the VM omitted from its line data. The VM does
-    // not emit a coverable position for some fall-through statements (e.g. a
-    // bare `return <literal>;` reached only when the `if` above it is false),
-    // which makes those lines silently absent rather than flagged. The branch
-    // pass already derives how often control reached each such line, so we add
-    // a DA entry for any inferred line the VM didn't report. We never override
-    // real VM hits — only fill genuine gaps.
+    // Backfill fall-through statement lines the VM silently omits (e.g. a
+    // bare `return <literal>;`), using hit counts the branch pass already
+    // derived. Never overrides real VM hits — only fills genuine gaps.
     var lines = _withBackfilledLines(record.lines, visitor.inferredLines);
-    if (visitor.abstractLines.isNotEmpty) {
-      lines = lines
-          .where((l) => !visitor.abstractLines.contains(l.line))
-          .toList();
+    final linesToStrip = {
+      ...visitor.abstractLines,
+      ...visitor.misattributedLines,
+      ...visitor.typeHeaderLines,
+    };
+    if (linesToStrip.isNotEmpty) {
+      lines = lines.where((l) => !linesToStrip.contains(l.line)).toList();
     }
 
-    // Strip blank lines — the VM never emits coverage for them, so any
-    // injected zero-hit entries for blank lines are noise.
+    // Strip blank lines, full-line comments, and closing-punctuation-only
+    // lines (e.g. a bare `}`) — the VM never emits real positions for these,
+    // so any zero-hit entry here is an injection/backfill artifact.
     final sourceLines = source.split('\n');
     lines = lines
         .where(
           (l) =>
               l.line < 1 ||
               l.line > sourceLines.length ||
-              sourceLines[l.line - 1].trim().isNotEmpty,
+              !_isNonExecutableSourceLine(sourceLines[l.line - 1]),
         )
         .toList();
 
@@ -106,6 +95,18 @@ class BranchAnalyzer {
   }
 }
 
+final _fullLineComment = RegExp(r'^//');
+final _punctuationOnly = RegExp(r'^[)\]}\s;,]*$');
+
+/// True for a line that can never be a real VM position: blank, a full-line
+/// `//` comment, or only closing punctuation (e.g. a bare `}` or `});`).
+bool _isNonExecutableSourceLine(String rawLine) {
+  final trimmed = rawLine.trim();
+  if (trimmed.isEmpty) return true;
+  if (_fullLineComment.hasMatch(trimmed)) return true;
+  return _punctuationOnly.hasMatch(trimmed);
+}
+
 class _BranchVisitor extends RecursiveAstVisitor<void> {
   final Map<int, int> lineHits;
   final Map<int, int> vmBranchHits;
@@ -114,14 +115,21 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
   final List<BranchData> branches = [];
   final List<FunctionData> functions = [];
 
-  /// Lines the branch pass reached, mapped to their inferred hit count. Used to
-  /// backfill statement lines the VM omitted from its line data.
+  /// Lines the branch pass reached, for backfilling lines the VM omitted.
   final Map<int, int> inferredLines = {};
 
-  /// Lines belonging to abstract member declarations (EmptyFunctionBody).
-  /// The VM sometimes emits coverable positions for these even though they
-  /// have no executable body; they are stripped from line coverage.
+  /// Lines of abstract members (EmptyFunctionBody) to strip from coverage —
+  /// the VM sometimes emits positions for these despite no executable body.
   final Set<int> abstractLines = {};
+
+  /// Lines the VM hit-tagged on a preceding annotation (e.g. `@override`) or
+  /// doc comment instead of the actual declaration below it — stripped once
+  /// their hit count has been relocated onto the real declaration line.
+  final Set<int> misattributedLines = {};
+
+  /// A type declaration's own header (signature through the opening `{`)
+  /// and closing `}` lines — never themselves an executable position.
+  final Set<int> typeHeaderLines = {};
 
   int _blockId = 0;
 
@@ -138,6 +146,17 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     for (var i = start; i <= end; i++) {
       abstractLines.add(i);
     }
+  }
+
+  /// Marks [node]'s header (signature through [body]'s opening `{`) and
+  /// [body]'s closing `}` as non-executable structural lines.
+  void _collectTypeHeaderLines(AnnotatedNode node, AstNode body) {
+    final headerStart = _lineOf(node.firstTokenAfterCommentAndMetadata.offset);
+    final headerEnd = _lineOf(body.beginToken.offset);
+    for (var i = headerStart; i <= headerEnd; i++) {
+      typeHeaderLines.add(i);
+    }
+    typeHeaderLines.add(_lineOf(body.endToken.offset));
   }
 
   /// Records [hits] for [line], keeping the highest count if it's seen more
@@ -160,12 +179,9 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     return _lineOf(node.beginToken.offset);
   }
 
-  /// Hit count for a branch arm whose entry token is on [entryLine] and whose
-  /// first executable line is [bodyLine].
-  ///
-  /// Prefers the VM's branch data (accurate even when [bodyLine] is a constant
-  /// `return` the VM drops from line data); falls back to line hits when the VM
-  /// has no branch entry for this arm (e.g. unit tests, or an implicit else).
+  /// Hit count for a branch arm entering at [entryLine] with body [bodyLine].
+  /// Prefers VM branch data (accurate even for a dropped constant `return`),
+  /// falling back to line hits when the VM has no entry for this arm.
   int _armHits(int entryLine, int bodyLine) {
     if (hasVmBranches) {
       final vm = vmBranchHits[entryLine] ?? vmBranchHits[bodyLine];
@@ -183,12 +199,9 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     return _lineOf(node.beginToken.offset);
   }
 
-  /// Returns the first line of the statement that follows [node] in its
-  /// parent [Block], or null when there is no such sibling.
-  ///
-  /// Used to infer the false-branch hit count for single-line `if` statements
-  /// such as `if (guard) throw ...;` where the then-body sits on the same line
-  /// as the `if` keyword.
+  /// First line of the statement following [node] in its parent [Block], or
+  /// null if none — used to infer the false-branch hits for single-line
+  /// `if`s like `if (guard) throw ...;`.
   int? _nextSiblingLine(AstNode node) {
     final parent = node.parent;
     if (parent is Block) {
@@ -225,9 +238,8 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       final trueHits = _armHits(decisionLine, decisionLine);
       branches.add(BranchData(decisionLine, block, 0, trueHits));
 
-      // The false arm is the fall-through to the next sibling statement. The VM
-      // has no branch entry for an implicit else, so this relies on line hits —
-      // and stays 0 when that sibling is itself a VM-omitted constant return.
+      // False arm falls through to the next sibling statement (no VM entry
+      // for an implicit else, so this relies on line hits).
       final nextLine = _nextSiblingLine(ifNode);
       if (nextLine == null) return; // last statement in block, no reference
       final falseHits = _armHits(nextLine, nextLine);
@@ -249,8 +261,7 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       branches.add(BranchData(decisionLine, block, 1, falseHits));
       _inferLine(elseLine, falseHits);
     } else {
-      // No else, or an else with no distinct body line (empty/same-line):
-      // infer the false arm from how often the condition didn't take the then.
+      // No else (or no distinct body line): infer from condition vs then hits.
       final condHits = _hitsAt(decisionLine);
       branches.add(
         BranchData(
@@ -321,16 +332,29 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     return '';
   }
 
-  /// Hit count for a function declared on [declLine] with [body].
-  ///
-  /// Uses the max of the declaration line and the first body line. The first
-  /// body line alone is unreliable: the VM omits some statement positions (e.g.
-  /// a bare `switch` keyword) so a clearly-executed function can read 0 there,
-  /// while the function-entry position on the declaration line is recorded.
-  int _functionHits(int declLine, FunctionBody body) {
+  /// Max of decl-line, relocated-annotation-line and first-body-line hits —
+  /// the body line alone is unreliable (the VM omits some statement
+  /// positions, e.g. a bare `switch`).
+  int _functionHits(int declLine, int relocatedHits, FunctionBody body) {
     final declHits = _hitsAt(declLine);
     final bodyHits = _firstBodyHits(body);
-    return declHits > bodyHits ? declHits : bodyHits;
+    var best = declHits > bodyHits ? declHits : bodyHits;
+    if (relocatedHits > best) best = relocatedHits;
+    return best;
+  }
+
+  /// [node]'s beginToken includes any doc comment/annotations (e.g.
+  /// `@override`), so the VM's own coverage sometimes hit-tags that line
+  /// instead of [declLine]. If so, relocate the hit onto [declLine] and mark
+  /// the annotation line for stripping.
+  int _relocateAnnotationHit(AnnotatedNode node, int declLine) {
+    final annotationLine = _lineOf(node.beginToken.offset);
+    if (annotationLine == declLine) return 0;
+    final hits = lineHits[annotationLine];
+    if (hits == null) return 0;
+    misattributedLines.add(annotationLine);
+    _inferLine(declLine, hits);
+    return hits;
   }
 
   int _firstBodyHits(FunctionBody body) {
@@ -352,12 +376,13 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     if (body is EmptyFunctionBody) {
       _collectAbstractLines(node);
     } else {
-      final declLine = _lineOf(node.beginToken.offset);
+      final declLine = _lineOf(node.firstTokenAfterCommentAndMetadata.offset);
+      final relocatedHits = _relocateAnnotationHit(node, declLine);
       functions.add(
         FunctionData(
           node.name.lexeme,
           declLine,
-          hits: _functionHits(declLine, body),
+          hits: _functionHits(declLine, relocatedHits, body),
         ),
       );
     }
@@ -374,9 +399,14 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       final name = typeName.isNotEmpty
           ? '$typeName.${node.name.lexeme}'
           : node.name.lexeme;
-      final declLine = _lineOf(node.beginToken.offset);
+      final declLine = _lineOf(node.firstTokenAfterCommentAndMetadata.offset);
+      final relocatedHits = _relocateAnnotationHit(node, declLine);
       functions.add(
-        FunctionData(name, declLine, hits: _functionHits(declLine, body)),
+        FunctionData(
+          name,
+          declLine,
+          hits: _functionHits(declLine, relocatedHits, body),
+        ),
       );
     }
     super.visitMethodDeclaration(node);
@@ -389,9 +419,14 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
       final typeName = _enclosingTypeName(node);
       final ctorSuffix = node.name?.lexeme;
       final name = ctorSuffix != null ? '$typeName.$ctorSuffix' : typeName;
-      final declLine = _lineOf(node.beginToken.offset);
+      final declLine = _lineOf(node.firstTokenAfterCommentAndMetadata.offset);
+      final relocatedHits = _relocateAnnotationHit(node, declLine);
       functions.add(
-        FunctionData(name, declLine, hits: _functionHits(declLine, body)),
+        FunctionData(
+          name,
+          declLine,
+          hits: _functionHits(declLine, relocatedHits, body),
+        ),
       );
     }
     super.visitConstructorDeclaration(node);
@@ -412,17 +447,14 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
 
   @override
   void visitClassDeclaration(ClassDeclaration node) {
+    _collectTypeHeaderLines(node, node.body);
     super.visitClassDeclaration(node); // visit members first
 
-    // Only strip the full class span for `abstract interface class` declarations.
-    // A plain `abstract class` can mix abstract and concrete members and should
-    // remain in coverage. Concrete classes may also have empty const constructors
-    // (EmptyFunctionBody) that are executable — their spans must not be stripped.
+    // Only `abstract interface class` can be fully stripped — a plain
+    // `abstract class` may mix in concrete (executable) members.
     if (node.abstractKeyword == null || node.interfaceKeyword == null) return;
 
-    // If an abstract class has no concrete members (all methods abstract, no
-    // fields with initializers), mark its entire span so injected zero-coverage
-    // entries are stripped and the record is dropped when otherwise empty.
+    // No concrete members: mark the whole span so it's dropped when empty.
     final hasConcreteMembers = node.body.members.any((m) {
       if (m is MethodDeclaration) return m.body is! EmptyFunctionBody;
       if (m is ConstructorDeclaration) {
@@ -433,6 +465,24 @@ class _BranchVisitor extends RecursiveAstVisitor<void> {
     });
 
     if (!hasConcreteMembers) _collectAbstractLines(node);
+  }
+
+  @override
+  void visitMixinDeclaration(MixinDeclaration node) {
+    _collectTypeHeaderLines(node, node.body);
+    super.visitMixinDeclaration(node);
+  }
+
+  @override
+  void visitEnumDeclaration(EnumDeclaration node) {
+    _collectTypeHeaderLines(node, node.body);
+    super.visitEnumDeclaration(node);
+  }
+
+  @override
+  void visitExtensionDeclaration(ExtensionDeclaration node) {
+    _collectTypeHeaderLines(node, node.body);
+    super.visitExtensionDeclaration(node);
   }
 
   // -------------------------------------------------------- switch

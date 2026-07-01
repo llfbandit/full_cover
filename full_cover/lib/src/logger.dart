@@ -1,12 +1,8 @@
 /// Verbosity levels, ordered from least to most output.
 enum LogLevel { quiet, normal, verbose }
 
-/// Leveled sink for console output.
-///
-/// Each message declares its importance — [warn], [info] or [detail] — and is
-/// emitted only when the configured [level] is high enough. The destination
-/// [sink] defaults to [print] but can be swapped (e.g. to capture output in
-/// tests), keeping I/O out of the domain classes that log.
+/// Leveled sink for console output; messages are emitted only when [level]
+/// is high enough. [sink] defaults to [print] but can be swapped in tests.
 class Logger {
   final LogLevel level;
   final void Function(String message) _sink;

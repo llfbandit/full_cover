@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
@@ -16,70 +17,101 @@ import 'coverage/lcov_record.dart';
 import 'logger.dart';
 import 'reporter/html_reporter.dart';
 import 'runner/test_runner.dart';
+import 'util/map_bounded.dart';
 
 class FullCoverRunner {
   final LogLevel level;
   final bool skipTests;
   final String? concurrency;
+  final int packageConcurrency;
   final Logger logger;
 
   FullCoverRunner({
     this.level = LogLevel.normal,
     this.skipTests = false,
     this.concurrency,
+    this.packageConcurrency = 2,
     Logger? logger,
   }) : logger = logger ?? Logger(level: level);
 
   Future<void> run(FullCoverConfig config) async {
-    // Includes packages excluded entirely (excludes == ['**']) — they must
-    // still be known as siblings so cross-package hits landing in them can
-    // be attributed and dropped, rather than being mistaken for the current
-    // package's own files just because they're nested under it on disk.
-    final allPackages = _discoverPackages(
-      config.workspaceRoot,
-      config.packageExcludes,
-    );
-    final packages = allPackages.where((pkg) => !_isSkipped(pkg)).toList();
-    logger.info(ansi.bold('Discovered ${packages.length} package(s).'));
+    final stopwatch = Stopwatch()..start();
+    try {
+      // Includes fully-excluded packages so cross-package hits landing in
+      // them are attributed correctly instead of mistaken for the current
+      // package's own files (see [_isSkipped]).
+      final allPackages = _discoverPackages(
+        config.workspaceRoot,
+        config.packageExcludes,
+      );
+      final packages = allPackages.where((pkg) => !_isSkipped(pkg)).toList();
+      logger.info(ansi.bold('Discovered ${packages.length} package(s).'));
 
-    final results = await _mapBounded(
-      packages,
-      1,
-      (pkg) => _processPackage(pkg, config, allPackages),
-    );
-    final allPackageRecords = [for (final records in results) ?records];
-
-    if (allPackageRecords.isEmpty) return;
-
-    if (config.globalLcov || config.htmlGlobal) {
-      logger.info('\n${ansi.header('Merging all packages')}');
-      final merged = LcovMerger().merge(allPackageRecords);
-
-      final absOutputDir = p.normalize(
-        p.join(config.workspaceRoot, config.outputDirectory),
+      // Computed once and reused by every package's own pipeline call below.
+      final siblingPatterns = LcovFilter.prepareSiblingPatterns(
+        siblings: allPackages.map(
+          (pkg) => (path: pkg.path, excludes: pkg.excludes),
+        ),
+        globalExcludes: config.globalFileExcludes,
       );
 
-      if (config.globalLcov) {
-        final lcovOut = p.join(absOutputDir, 'lcov.info');
-        logger.info(ansi.dim('  Writing merged lcov → $lcovOut'));
-        await Directory(absOutputDir).create(recursive: true);
-        final lcovContent = merged.map((r) => r.toInfoString()).join('\n');
-        await File(lcovOut).writeAsString(lcovContent);
-      }
+      final results = await mapBounded(
+        packages,
+        packages.isEmpty ? 1 : packageConcurrency.clamp(1, packages.length),
+        (pkg) => _processPackage(pkg, config, siblingPatterns),
+      );
+      final allPackageRecords = [for (final records in results) ?records];
 
-      if (config.htmlGlobal) {
-        final htmlOut = p.join(absOutputDir, config.htmlDirectory);
-        logger.info(ansi.dim('  Generating global HTML → $htmlOut'));
-        await HtmlReporter().generate(
-          records: merged,
-          outputDir: htmlOut,
-          title: 'Global Coverage',
-          limits: config.limits,
+      if (allPackageRecords.isEmpty) return;
+
+      if (config.globalLcov || config.htmlGlobal) {
+        logger.info('\n${ansi.header('Merging all packages')}');
+        final merged = LcovMerger().merge(allPackageRecords);
+
+        final absOutputDir = p.normalize(
+          p.join(config.workspaceRoot, config.outputDirectory),
         );
-      }
-    }
 
-    logger.info('\n${ansi.green(ansi.bold('✓ Done.'))}');
+        if (config.globalLcov) {
+          final lcovOut = p.join(absOutputDir, 'lcov.info');
+          logger.info(ansi.dim('  Writing merged lcov → $lcovOut'));
+          await Directory(absOutputDir).create(recursive: true);
+          final lcovContent = merged.map((r) => r.toInfoString()).join('\n');
+          await File(lcovOut).writeAsString(lcovContent);
+        }
+
+        if (config.htmlGlobal) {
+          final htmlOut = p.join(absOutputDir, config.htmlDirectory);
+          logger.info(
+            ansi.dim(
+              '  Generating global HTML → ${p.join(htmlOut, 'index.html')}',
+            ),
+          );
+          await HtmlReporter().generate(
+            records: merged,
+            outputDir: htmlOut,
+            title: 'Global Coverage',
+            limits: config.limits,
+          );
+        }
+      }
+
+      logger.info('\n${ansi.green(ansi.bold('✓ Done.'))}');
+    } finally {
+      logger.info(
+        ansi.dim('Completed in ${_formatDuration(stopwatch.elapsed)}'),
+      );
+    }
+  }
+
+  /// Formats [duration] as e.g. `1m 05s` or `12.3s`.
+  String _formatDuration(Duration duration) {
+    if (duration.inMinutes < 1) {
+      return '${(duration.inMilliseconds / 1000).toStringAsFixed(1)}s';
+    }
+    final minutes = duration.inMinutes;
+    final seconds = duration.inSeconds % 60;
+    return '${minutes}m ${seconds.toString().padLeft(2, '0')}s';
   }
 
   /// Runs the full pipeline for [pkg], returning its filtered records or null
@@ -91,7 +123,7 @@ class FullCoverRunner {
   Future<List<LcovRecord>?> _processPackage(
     PackageConfig pkg,
     FullCoverConfig config,
-    List<PackageConfig> allPackages,
+    List<SiblingPattern> siblingPatterns,
   ) async {
     final buffer = StringBuffer();
     final pkgLogger = Logger(level: level, sink: buffer.writeln);
@@ -103,7 +135,7 @@ class FullCoverRunner {
         pkgPath,
         config,
         pkgLogger,
-        allPackages,
+        siblingPatterns,
       );
       if (logger.isVerbose) {
         _flushBlock(name, buffer);
@@ -112,8 +144,7 @@ class FullCoverRunner {
       }
       return records;
     } catch (_) {
-      // Surface whatever detail was captured before letting the error propagate
-      // (the test output itself rides along on the thrown StateError).
+      // Surface captured detail before the error propagates.
       _flushBlock(name, buffer);
       rethrow;
     }
@@ -159,7 +190,7 @@ class FullCoverRunner {
     String pkgPath,
     FullCoverConfig config,
     Logger log,
-    List<PackageConfig> allPackages,
+    List<SiblingPattern> siblingPatterns,
   ) async {
     log.detail(ansi.dim('Processing $pkgPath'));
 
@@ -198,23 +229,18 @@ class FullCoverRunner {
 
     log.detail(ansi.dim('  Parsed ${records.length} source records.'));
 
-    // Drop sibling-package records that should be excluded under their own
-    // package config, so cross-package hits don't re-introduce excluded files.
+    // Drop cross-package hits excluded under their own package's config.
     if (config.crossPackageCoverage) {
       records = LcovFilter.filterSiblingExcludes(
         records: records,
         currentPkgPath: pkgPath,
-        siblings: allPackages.map(
-          (pkg) => (path: pkg.path, excludes: pkg.excludes),
-        ),
-        globalExcludes: config.globalFileExcludes,
+        siblingPatterns: siblingPatterns,
       );
     }
 
     final filePatterns = [...config.globalFileExcludes, ...pkg.excludes];
 
-    // Inject zero-coverage for uncovered files, skipping excluded ones so we
-    // never read a file that the filter would discard anyway.
+    // Inject zero-coverage for uncovered files, skipping excluded ones.
     records = await LcovInjector().inject(
       records,
       pkgPath,
@@ -230,10 +256,17 @@ class FullCoverRunner {
     );
     log.detail(ansi.dim('  After filtering: ${records.length} records.'));
 
-    // Replace VM line-level branch data with condition-level branch data
-    final branchAnalyzer = BranchAnalyzer();
-    records = records
-        .map(branchAnalyzer.analyze)
+    // Replace VM line-level branch data with condition-level branch data.
+    // Each file's AST parse is independent and CPU-bound, so it's spread
+    // across isolates rather than run sequentially on the main one — the
+    // per-record payload is just source-file path + int line/branch data,
+    // so isolate message-passing overhead stays small relative to the parse.
+    final analyzed = await mapBounded(
+      records,
+      Platform.numberOfProcessors,
+      (r) => Isolate.run(() => BranchAnalyzer().analyze(r)),
+    );
+    records = analyzed
         .where(
           (r) =>
               r.lines.isNotEmpty ||
@@ -244,7 +277,11 @@ class FullCoverRunner {
 
     if (config.htmlPackage && records.isNotEmpty) {
       final pkgOutDir = p.join(pkgPath, 'coverage', 'html');
-      log.detail(ansi.dim('  Generating per-package HTML → $pkgOutDir'));
+      log.detail(
+        ansi.dim(
+          '  Generating per-package HTML → ${p.join(pkgOutDir, 'index.html')}',
+        ),
+      );
       await HtmlReporter().generate(
         records: records,
         outputDir: pkgOutDir,
@@ -255,30 +292,6 @@ class FullCoverRunner {
     }
 
     return records;
-  }
-
-  /// Applies [task] to each of [items] with at most [maxConcurrent] running at
-  /// once, preserving input order in the returned results.
-  Future<List<T>> _mapBounded<S, T>(
-    List<S> items,
-    int maxConcurrent,
-    Future<T> Function(S item) task,
-  ) async {
-    final results = List<T?>.filled(items.length, null);
-    var next = 0;
-    Future<void> worker() async {
-      while (true) {
-        final index = next++;
-        if (index >= items.length) return;
-        results[index] = await task(items[index]);
-      }
-    }
-
-    final workerCount = maxConcurrent < items.length
-        ? maxConcurrent
-        : items.length;
-    await Future.wait([for (var i = 0; i < workerCount; i++) worker()]);
-    return results.cast<T>();
   }
 
   Future<void> clean(FullCoverConfig config) async {
@@ -308,24 +321,17 @@ class FullCoverRunner {
     }
   }
 
-  /// A package whose resolved excludes are exactly `['**']` — i.e. the user
-  /// excluded it entirely, with no negations. Its own tests are never run,
-  /// but it's still returned by [_discoverPackages] so cross-package hits
-  /// landing in it can be attributed to it (and dropped) instead of being
-  /// mistaken for the current package's own files.
+  /// True when the user excluded [pkg] entirely (`excludes == ['**']`).
+  /// Its tests are skipped, but [_discoverPackages] still returns it so
+  /// cross-package hits landing in it are dropped rather than mistaken for
+  /// the current package's own files.
   bool _isSkipped(PackageConfig pkg) =>
       pkg.excludes.length == 1 && pkg.excludes.first == '**';
 
   /// Reads the workspace [pubspec.yaml] and returns one [PackageConfig] per
-  /// discovered package, with file exclusions resolved from [excludeConfigs].
-  ///
-  /// The root package (`.`) is always included. Sub-packages come from the
-  /// `workspace:` list if present, otherwise from `path:` entries in
-  /// `dependencies`, `dev_dependencies`, and `dependency_overrides`.
-  ///
-  /// Packages excluded entirely (`excludes == ['**']`) are still included in
-  /// the result — see [_isSkipped] — callers that only want testable
-  /// packages must filter them out themselves.
+  /// discovered package (root plus `workspace:`/`path:` dependencies), with
+  /// excludes resolved from [excludeConfigs]. Includes fully-excluded
+  /// packages (see [_isSkipped]) — callers filter those out themselves.
   List<PackageConfig> _discoverPackages(
     String workspaceRoot,
     List<PackageExcludeConfig> excludeConfigs,

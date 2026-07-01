@@ -30,9 +30,8 @@ class FullCoverConfig {
   /// limits — coverage threshold rules for color-coding the HTML report.
   final LimitsConfig limits;
 
-  /// cross_package_coverage — when true, hits exercised on sibling local
-  /// packages during a package's test run are included in the LCOV output,
-  /// so cross-package call paths contribute to coverage of the called package.
+  /// cross_package_coverage — when true, hits on sibling local packages
+  /// during a package's test run are included in its LCOV output.
   final bool crossPackageCoverage;
 
   const FullCoverConfig({

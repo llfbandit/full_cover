@@ -10,23 +10,18 @@ import 'local_packages.dart';
 class LcovConverter {
   const LcovConverter();
 
-  /// Converts every `*.json` file under [coverageJsonDir] into LCOV and writes
-  /// the result to [lcovOutputPath].
-  ///
-  /// [reportRoot] is the package directory whose `lib/` is reported on; it is
-  /// also the starting point for locating `package_config.json`. When no JSON
-  /// coverage is found an empty LCOV file is written.
-  ///
-  /// Packages outside the current project/workspace (e.g. pub-cache
-  /// dependencies swept in by `--coverage-package=.*`) are not filtered here
-  /// — that happens after parsing, in [LcovFilter.filterSiblingExcludes],
-  /// so it applies uniformly to both `dart test` (JSON, converted here) and
-  /// `flutter test` (which writes `lcov.info` directly, bypassing this class).
+  /// Converts every `*.json` file under [coverageJsonDir] into LCOV at
+  /// [lcovOutputPath] (empty if none found). [reportRoot] is the package
+  /// directory whose `lib/` is reported on and the default starting point
+  /// for locating `package_config.json` — pass [packageConfigPath] and
+  /// [localPackages] to reuse an already-resolved one instead.
   Future<void> convert({
     required String coverageJsonDir,
     required String lcovOutputPath,
     required String reportRoot,
     bool crossPackageCoverage = true,
+    String? packageConfigPath,
+    List<LocalPackage>? localPackages,
   }) async {
     final jsonFiles = _jsonFiles(Directory(coverageJsonDir));
 
@@ -38,24 +33,31 @@ class LcovConverter {
     }
 
     final hitmap = await HitMap.parseFiles(jsonFiles);
-    final configPath = findPackageConfigPath(reportRoot);
+    final configPath = packageConfigPath ?? findPackageConfigPath(reportRoot);
     final resolver = await Resolver.create(
       packagesPath: configPath,
       sdkRoot: _sdkRoot(),
     );
     final reportOn = [
       p.join(reportRoot, 'lib'),
-      if (crossPackageCoverage) ..._localLibDirs(configPath, reportRoot),
+      if (crossPackageCoverage)
+        ..._localLibDirs(
+          localPackages ?? localWorkspacePackages(configPath),
+          reportRoot,
+        ),
     ];
     final lcovContent = hitmap.formatLcov(resolver, reportOn: reportOn);
     File(lcovOutputPath).writeAsStringSync(lcovContent);
   }
 
-  /// Returns the `lib/` directories of local packages listed in [configPath],
-  /// excluding [reportRoot] itself (already in `reportOn`).
-  List<String> _localLibDirs(String configPath, String reportRoot) {
+  /// Returns the `lib/` directories of [localPackages], excluding
+  /// [reportRoot] itself (already in `reportOn`).
+  List<String> _localLibDirs(
+    List<LocalPackage> localPackages,
+    String reportRoot,
+  ) {
     final absReportRoot = p.normalize(p.absolute(reportRoot));
-    return localWorkspacePackages(configPath)
+    return localPackages
         .where((pkg) => pkg.rootPath != absReportRoot)
         .map((pkg) => pkg.libPath)
         .where((libPath) => Directory(libPath).existsSync())

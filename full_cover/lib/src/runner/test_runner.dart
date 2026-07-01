@@ -7,6 +7,7 @@ import 'package:yaml/yaml.dart';
 import '../ansi.dart';
 import '../config/package_config.dart';
 import '../coverage/lcov_converter.dart';
+import '../coverage/local_packages.dart';
 import '../logger.dart';
 
 class TestRunner {
@@ -52,12 +53,15 @@ class TestRunner {
 
   Future<void> _runFlutter(String pkgPath) async {
     logger.detail(ansi.cyan('  Running flutter test...'));
+    final localPackages = crossPackageCoverage
+        ? localWorkspacePackages(findPackageConfigPath(pkgPath))
+        : const <LocalPackage>[];
     await _runProcess('flutter', [
       'test',
       '--coverage',
       '--branch-coverage',
       if (concurrency != null) '--concurrency=$concurrency',
-      if (crossPackageCoverage) '--coverage-package=.*',
+      if (crossPackageCoverage) ..._coveragePackageArgs(localPackages),
     ], pkgPath);
   }
 
@@ -68,6 +72,12 @@ class TestRunner {
     // Clean previous run
     if (tempDir.existsSync()) await tempDir.delete(recursive: true);
 
+    // Parsed once and reused for both the args and the LCOV conversion below.
+    final configPath = findPackageConfigPath(pkgPath);
+    final localPackages = crossPackageCoverage
+        ? localWorkspacePackages(configPath)
+        : const <LocalPackage>[];
+
     // Step 1: run dart test with coverage collection
     logger.detail(ansi.cyan('  Running dart test...'));
     await _runProcess('dart', [
@@ -75,7 +85,7 @@ class TestRunner {
       '--coverage=$tempCoverageDir',
       '--branch-coverage',
       if (concurrency != null) '--concurrency=$concurrency',
-      if (crossPackageCoverage) '--coverage-package=.*',
+      if (crossPackageCoverage) ..._coveragePackageArgs(localPackages),
     ], pkgPath);
 
     // Step 2: convert raw coverage JSON to LCOV
@@ -85,10 +95,24 @@ class TestRunner {
       lcovOutputPath: lcovOutputPath,
       reportRoot: pkgPath,
       crossPackageCoverage: crossPackageCoverage,
+      packageConfigPath: configPath,
+      localPackages: localPackages,
     );
 
     // Clean up temp dir
     if (tempDir.existsSync()) await tempDir.delete(recursive: true);
+  }
+
+  /// Builds one `--coverage-package=\bname\b` argument per local package
+  /// (this one plus any workspace siblings), instead of a single alternation
+  /// regex like `^(a|b)$`.
+  List<String> _coveragePackageArgs(List<LocalPackage> localPackages) {
+    final names = localPackages.map((pkg) => pkg.name).toSet();
+    if (names.isEmpty) return ['--coverage-package=.*'];
+    return [
+      for (final name in names)
+        '--coverage-package=\\b${RegExp.escape(name)}\\b',
+    ];
   }
 
   /// Runs [executable] with [args] in [pkgPath], streaming output live and
@@ -105,8 +129,7 @@ class TestRunner {
       runInShell: true,
     );
 
-    // In verbose mode output streams live; otherwise it's captured
-    // so failures are diagnosable without re-running with -v.
+    // Captured (not just streamed) so failures are diagnosable without -v.
     final captured = logger.isVerbose ? null : StringBuffer();
     final stdoutDone = _forward(process.stdout, captured);
     final stderrDone = _forward(process.stderr, captured);
@@ -125,9 +148,7 @@ class TestRunner {
     }
   }
 
-  /// Consumes a process output [stream]. Lines are forwarded to the logger
-  /// live when verbose; when [sink] is non-null they are also buffered for
-  /// inclusion in error messages.
+  /// Forwards [stream] lines to the logger, buffering into [sink] if given.
   Future<void> _forward(Stream<List<int>> stream, StringBuffer? sink) {
     return stream
         .transform(utf8.decoder)

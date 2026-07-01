@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../config/limits_config.dart';
 import '../coverage/lcov_record.dart';
+import '../util/map_bounded.dart';
 import 'file_page_builder.dart';
 import 'folder_page_builder.dart';
 import 'html_render_context.dart';
@@ -50,11 +51,17 @@ class HtmlReporter {
       );
     }
 
-    final filePagePaths = <LcovRecord, String>{};
     final fileBuilder = FilePageBuilder(ctx);
-    for (final r in groups.values.expand((l) => l)) {
-      filePagePaths[r] = await fileBuilder.write(r, filesDir, rootPath, title);
-    }
+    final allRecords = groups.values.expand((l) => l).toList();
+    // Pages are independent reads+writes, so generate them concurrently.
+    final pagePaths = await mapBounded(
+      allRecords,
+      Platform.numberOfProcessors,
+      (r) => fileBuilder.write(r, filesDir, rootPath, title),
+    );
+    final filePagePaths = <LcovRecord, String>{
+      for (var i = 0; i < allRecords.length; i++) allRecords[i]: pagePaths[i],
+    };
 
     await FolderPageBuilder(
       ctx,

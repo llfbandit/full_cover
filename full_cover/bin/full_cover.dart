@@ -27,6 +27,13 @@ void main(List<String> arguments) async {
       help: 'Number of concurrent test suites (passed to dart/flutter test).',
       valueHelp: 'jobs',
     )
+    ..addOption(
+      'package-concurrency',
+      abbr: 'p',
+      defaultsTo: '2',
+      help: 'Number of packages to process concurrently.',
+      valueHelp: 'count',
+    )
     ..addFlag(
       'verbose',
       abbr: 'v',
@@ -67,6 +74,8 @@ void main(List<String> arguments) async {
   final verbose = results['verbose'] as bool;
   final quiet = results['quiet'] as bool;
   final concurrency = results['concurrency'] as String?;
+  final packageConcurrency =
+      int.tryParse(results['package-concurrency'] as String) ?? 2;
 
   final level = verbose
       ? LogLevel.verbose
@@ -87,6 +96,7 @@ void main(List<String> arguments) async {
       level: level,
       skipTests: skipTests,
       concurrency: concurrency,
+      packageConcurrency: packageConcurrency,
     );
     if (clean) {
       await runner.clean(config);

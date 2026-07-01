@@ -7,6 +7,10 @@ class HtmlRenderContext {
   final LimitsConfig limits;
   final String _pageTemplate;
 
+  /// Memoizes [splitByPackage] — called repeatedly for the same sourceFile
+  /// across grouping, sorting, and row emission.
+  final Map<String, ({String package, String shortPath})> _splitCache = {};
+
   HtmlRenderContext({required this.limits, required String pageTemplate})
     : _pageTemplate = pageTemplate;
 
@@ -159,7 +163,10 @@ class HtmlRenderContext {
 
   // ------------------------------------------------------------------- paths
 
-  ({String package, String shortPath}) splitByPackage(String sourceFile) {
+  ({String package, String shortPath}) splitByPackage(String sourceFile) =>
+      _splitCache[sourceFile] ??= _splitByPackage(sourceFile);
+
+  ({String package, String shortPath}) _splitByPackage(String sourceFile) {
     final norm = sourceFile.replaceAll(r'\', '/');
     final libIdx = norm.indexOf('/lib/');
     if (libIdx < 0) return (package: '', shortPath: p.basename(sourceFile));

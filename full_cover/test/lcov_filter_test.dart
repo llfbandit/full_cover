@@ -118,15 +118,22 @@ void main() {
     });
     tearDown(() => base.deleteSync(recursive: true));
 
+    List<SiblingPattern> patterns(
+      List<({String path, List<String> excludes})> siblings, {
+      List<String> globalExcludes = const [],
+    }) => LcovFilter.prepareSiblingPatterns(
+      siblings: siblings,
+      globalExcludes: globalExcludes,
+    );
+
     test('passes through own-package records regardless of siblings', () {
       final records = [_rec(p.join(pkgA, 'lib', 'a.dart'))];
       final result = LcovFilter.filterSiblingExcludes(
         records: records,
         currentPkgPath: pkgA,
-        siblings: [
+        siblingPatterns: patterns([
           (path: pkgB, excludes: ['**']),
-        ],
-        globalExcludes: [],
+        ]),
       );
       expect(result, hasLength(1));
     });
@@ -139,8 +146,7 @@ void main() {
       final result = LcovFilter.filterSiblingExcludes(
         records: records,
         currentPkgPath: pkgA,
-        siblings: [(path: pkgB, excludes: [])],
-        globalExcludes: [],
+        siblingPatterns: patterns([(path: pkgB, excludes: [])]),
       );
       expect(result, hasLength(2));
     });
@@ -154,10 +160,9 @@ void main() {
       final result = LcovFilter.filterSiblingExcludes(
         records: records,
         currentPkgPath: pkgA,
-        siblings: [
+        siblingPatterns: patterns([
           (path: pkgB, excludes: ['lib/gen/**']),
-        ],
-        globalExcludes: [],
+        ]),
       );
       final files = result.map((r) => r.sourceFile).toList();
       expect(files, contains(p.join(pkgA, 'lib', 'a.dart')));
@@ -173,8 +178,10 @@ void main() {
       final result = LcovFilter.filterSiblingExcludes(
         records: records,
         currentPkgPath: pkgA,
-        siblings: [(path: pkgB, excludes: [])],
-        globalExcludes: ['**/*.g.dart'],
+        siblingPatterns: patterns(
+          [(path: pkgB, excludes: [])],
+          globalExcludes: ['**/*.g.dart'],
+        ),
       );
       final files = result.map((r) => r.sourceFile).toList();
       expect(files, contains(p.join(pkgA, 'lib', 'a.dart')));
@@ -184,8 +191,7 @@ void main() {
     test(
       'drops records from packages outside the workspace (not in siblings list)',
       () {
-        // Simulates a pub-cache dependency swept in by --coverage-package=.*:
-        // it's neither the current package nor a discovered workspace sibling.
+        // Simulates a pub-cache dependency swept in by --coverage-package=.*.
         final pkgC = p.join(base.path, 'pkg_c');
         final records = [
           _rec(p.join(pkgA, 'lib', 'a.dart')),
@@ -194,10 +200,9 @@ void main() {
         final result = LcovFilter.filterSiblingExcludes(
           records: records,
           currentPkgPath: pkgA,
-          siblings: [
+          siblingPatterns: patterns([
             (path: pkgB, excludes: ['**']),
-          ],
-          globalExcludes: [],
+          ]),
         );
         final files = result.map((r) => r.sourceFile).toList();
         expect(files, [p.join(pkgA, 'lib', 'a.dart')]);
@@ -219,14 +224,13 @@ void main() {
         final result = LcovFilter.filterSiblingExcludes(
           records: records,
           currentPkgPath: base.path,
-          siblings: [
+          siblingPatterns: patterns([
             (
               path: base.path,
               excludes: [],
             ), // current pkg in list (as runner passes it)
             (path: pkgB, excludes: ['lib/gen/**']),
-          ],
-          globalExcludes: [],
+          ]),
         );
         final files = result.map((r) => r.sourceFile).toList();
         expect(files, contains(p.join(base.path, 'lib', 'root.dart')));
@@ -234,5 +238,37 @@ void main() {
         expect(files, isNot(contains(p.join(pkgB, 'lib', 'gen', 'b.g.dart'))));
       },
     );
+
+    test('prepareSiblingPatterns output is reusable across multiple '
+        'filterSiblingExcludes calls with different currentPkgPath', () {
+      // Mirrors FullCoverRunner computing this once and reusing it per package.
+      final shared = patterns([
+        (path: pkgA, excludes: []),
+        (path: pkgB, excludes: ['lib/gen/**']),
+      ]);
+
+      final fromA = LcovFilter.filterSiblingExcludes(
+        records: [
+          _rec(p.join(pkgA, 'lib', 'a.dart')),
+          _rec(p.join(pkgB, 'lib', 'gen', 'b.g.dart')),
+        ],
+        currentPkgPath: pkgA,
+        siblingPatterns: shared,
+      );
+      expect(fromA.map((r) => r.sourceFile), [p.join(pkgA, 'lib', 'a.dart')]);
+
+      final fromB = LcovFilter.filterSiblingExcludes(
+        records: [
+          _rec(p.join(pkgB, 'lib', 'gen', 'b.g.dart')),
+          _rec(p.join(pkgB, 'lib', 'real.dart')),
+        ],
+        currentPkgPath: pkgB,
+        siblingPatterns: shared,
+      );
+      expect(fromB.map((r) => r.sourceFile), [
+        p.join(pkgB, 'lib', 'gen', 'b.g.dart'),
+        p.join(pkgB, 'lib', 'real.dart'),
+      ]);
+    });
   });
 }

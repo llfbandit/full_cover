@@ -1,11 +1,7 @@
 import 'dart:io';
 
-/// ANSI color and style helpers for console output.
-///
-/// Styling is disabled automatically when stdout is not a terminal (e.g. when
-/// redirected to a file or pipe), when the terminal doesn't support escapes, or
-/// when the `NO_COLOR` environment variable is set — so captured or piped
-/// output stays clean. Each helper is a no-op passthrough when disabled.
+/// ANSI color/style helpers; auto-disabled (no-op passthrough) when stdout
+/// isn't a terminal, doesn't support escapes, or `NO_COLOR` is set.
 class Ansi {
   final bool enabled;
 

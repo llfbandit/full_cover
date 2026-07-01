@@ -79,6 +79,31 @@ class Foo {
     expect(result.functions.first.name, 'Foo.value');
   });
 
+  test(
+    'relocates a hit tagged on an @override line onto the method signature',
+    () {
+      final file = writeSource('override.dart', '''
+class Foo {
+  @override
+  int value() {
+    return 42;
+  }
+}
+''');
+      // The VM tags the `@override` line (2) instead of the signature (3).
+      final result = analyzer.analyze(record(file.path, {2: 3, 4: 3}));
+      expect(result.functions.single.name, 'Foo.value');
+      expect(result.functions.single.line, 3);
+      expect(result.functions.single.hits, 3);
+      expect(
+        result.lines.any((l) => l.line == 2),
+        isFalse,
+        reason: 'the misattributed @override line must not surface',
+      );
+      expect(result.lines.any((l) => l.line == 3 && l.hits == 3), isTrue);
+    },
+  );
+
   test('extracts constructors and skips redirecting ones', () {
     final file = writeSource('ctor.dart', '''
 class Point {
@@ -450,11 +475,12 @@ class MyException implements Exception {
   const MyException();
 }
 ''');
-    // Non-abstract class with a const empty constructor — NOT fully abstract.
-    // All lines must be preserved; none should be stripped.
+    // Non-abstract class with a const empty constructor — NOT fully abstract,
+    // so its members must be preserved. The class's own header line is
+    // stripped as a non-executable structural line regardless.
     final result = analyzer.analyze(record(file.path, {1: 1, 2: 1}));
     final lines = {for (final l in result.lines) l.line};
-    expect(lines, contains(1));
+    expect(lines, isNot(contains(1)));
     expect(lines, contains(2));
   });
 
@@ -470,5 +496,53 @@ String summary(bool a) {
 
     final byLine = {for (final l in result.lines) l.line: l.hits};
     expect(byLine[3], 2);
+  });
+
+  test('strips class header, comments, and closing braces even when spuriously '
+      'zero-tagged by cross-package injection/merge', () {
+    final file = writeSource('module.dart', '''
+class LocationModule {
+  Future<void> configure() async {
+    // Check required modules
+    checkRegistered();
+
+    registerSingleton();
+    // Repository
+    registerFactory();
+  }
+}
+
+void checkRegistered() {}
+void registerSingleton() {}
+void registerFactory() {}
+''');
+    // A package whose own tests never touch this file gets it fully
+    // zero-injected (every non-blank line, including the class header,
+    // comments and closing braces). Merging that with real cross-package
+    // hits for the actual statements leaves these zero entries dangling.
+    final result = analyzer.analyze(
+      record(file.path, {
+        1: 0, // class LocationModule {
+        2: 4, // Future<void> configure() async {
+        3: 0, // // Check required modules
+        4: 8, // checkRegistered();
+        6: 8, // registerSingleton();
+        7: 0, // // Repository
+        8: 14, // registerFactory();
+        9: 0, // }
+        10: 0, // }
+      }),
+    );
+
+    final byLine = {for (final l in result.lines) l.line: l.hits};
+    expect(byLine.containsKey(1), isFalse, reason: 'class header line');
+    expect(byLine.containsKey(3), isFalse, reason: 'comment line');
+    expect(byLine.containsKey(7), isFalse, reason: 'comment line');
+    expect(byLine.containsKey(9), isFalse, reason: 'method closing brace');
+    expect(byLine.containsKey(10), isFalse, reason: 'class closing brace');
+    expect(byLine[2], 4);
+    expect(byLine[4], 8);
+    expect(byLine[6], 8);
+    expect(byLine[8], 14);
   });
 }

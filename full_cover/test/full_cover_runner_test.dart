@@ -47,9 +47,7 @@ workspace:
       makePkg('packages/testing/mocks');
       makePkg('packages/translations');
 
-      // Simulates what `dart test`/`flutter test` with cross-package
-      // coverage produced: hits on the root's own file AND on files inside
-      // packages the user excluded entirely (no `excludes:` key given).
+      // Simulates cross-package coverage hitting fully-excluded packages.
       Directory(p.join(root.path, 'coverage')).createSync(recursive: true);
       File(p.join(root.path, 'coverage', 'lcov.info')).writeAsStringSync(
         lcovRecord(p.join(root.path, 'lib', 'app.dart')) +

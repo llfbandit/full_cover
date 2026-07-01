@@ -8,13 +8,9 @@ import 'lcov_filter.dart';
 import 'lcov_record.dart';
 
 class LcovInjector {
-  /// Scans [packagePath]/lib/**/*.dart and injects zero-coverage records
-  /// for any source files not already represented in [records].
-  ///
-  /// [filePatterns] are the same glob patterns used by [LcovFilter]: files
-  /// matching any pattern are skipped during the scan, avoiding unnecessary
-  /// file reads for files that would be filtered out anyway. Negation patterns
-  /// (prefixed with `!`) are also honoured.
+  /// Scans [packagePath]/lib/**/*.dart and injects zero-coverage records for
+  /// files not already in [records], skipping ones matching [filePatterns]
+  /// (same glob/negation rules as [LcovFilter]).
   Future<List<LcovRecord>> inject(
     List<LcovRecord> records,
     String packagePath, {
@@ -34,7 +30,7 @@ class LcovInjector {
 
     final parsed = LcovFilter.parsePatterns(filePatterns);
     final injected = <LcovRecord>[];
-    final scanGlob = Glob('lib/**/*.dart');
+    final scanGlob = Glob('lib/**.dart');
 
     await for (final entity in scanGlob.list(root: absPackagePath)) {
       if (entity is! File) continue;

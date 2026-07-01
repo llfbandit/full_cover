@@ -74,12 +74,8 @@ void main() {
     expect(File(lcovOut).existsSync(), isTrue);
   });
 
-  // Builds a two-package workspace under [root]:
-  //   root/.dart_tool/package_config.json  (lists pkg_a + pkg_b as local, plus a fake pub entry)
-  //   root/pkg_a/lib/a.dart
-  //   root/pkg_b/lib/b.dart
-  // Returns a coverage JSON directory containing hits for both packages,
-  // placed under pkg_a (simulating pkg_a's test run hitting pkg_b code).
+  // Two-package workspace under [root]; returns a JSON coverage dir (under
+  // pkg_a) with hits for both, simulating pkg_a's tests hitting pkg_b code.
   ({Directory pkgADir, Directory jsonDir}) buildWorkspace(Directory root) {
     final pkgADir = Directory(p.join(root.path, 'pkg_a'))..createSync();
     Directory(p.join(pkgADir.path, 'lib')).createSync();

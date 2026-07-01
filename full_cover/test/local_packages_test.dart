@@ -44,14 +44,13 @@ void main() {
         }),
       );
 
-      final rootPaths = localWorkspacePackages(
-        configPath,
-      ).map((pkg) => pkg.rootPath);
+      final local = localWorkspacePackages(configPath);
       expect(
-        rootPaths,
+        local.map((pkg) => pkg.rootPath),
         containsAll([tempDir.path, p.join(tempDir.path, 'pkg_a')]),
       );
-      expect(rootPaths, hasLength(2));
+      expect(local.map((pkg) => pkg.name), containsAll(['root_pkg', 'pkg_a']));
+      expect(local, hasLength(2));
     },
   );
 }
